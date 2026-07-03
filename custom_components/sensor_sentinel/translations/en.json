@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sensor Sentinel",
+        "description": "Set up the performance-safe unavailable-entity watchdog. You can tune exclusion rules afterwards from the Configure button."
+      }
+    },
+    "abort": {
+      "already_configured": "Sensor Sentinel is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Exclusion rules & tuning",
+        "description": "Rules over lists. Anything matched here is never reported as down.",
+        "data": {
+          "bad_states": "States treated as \"bad\"",
+          "excluded_domains": "Excluded domains",
+          "excluded_integrations": "Excluded integrations (platform names)",
+          "excluded_patterns": "Excluded entity_id globs (e.g. *_firmware, roborock_*)",
+          "excluded_entities": "Excluded entities",
+          "grace_period": "Grace window (seconds a flap is ignored)",
+          "integration_threshold": "Roll up as one incident at N entities per integration",
+          "notify_targets": "Mobile notify services (e.g. mobile_app_iphone)",
+          "persistent_notification": "Create persistent notifications"
+        }
+      },
+      "preview": {
+        "title": "Dry-run preview",
+        "description": "These rules would silence {count} currently-down entit(y/ies):\n\n{preview}\n\nSubmit to save, or go back to adjust."
+      }
+    }
+  }
+}

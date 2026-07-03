@@ -1,0 +1,54 @@
+snooze:
+  name: Snooze entity
+  description: Temporarily mute an entity so it is not reported as down.
+  fields:
+    entity_id:
+      name: Entity
+      description: The entity to snooze.
+      required: true
+      selector:
+        entity:
+    minutes:
+      name: Minutes
+      description: How long to mute the entity for.
+      default: 60
+      selector:
+        number:
+          min: 1
+          max: 10080
+          unit_of_measurement: min
+
+unsnooze:
+  name: Un-snooze entity
+  description: Clear a snooze so the entity is evaluated again.
+  fields:
+    entity_id:
+      name: Entity
+      description: The entity to un-snooze.
+      required: true
+      selector:
+        entity:
+
+exclude:
+  name: Exclude entity
+  description: Add a permanent explicit-entity exclusion rule.
+  fields:
+    entity_id:
+      name: Entity
+      description: The entity to exclude from watchdog reporting.
+      required: true
+      selector:
+        entity:
+
+explain:
+  name: Explain entity
+  description: >-
+    Return why an entity is flagged or excluded (which rule, if any, is acting
+    on it). Returns a response.
+  fields:
+    entity_id:
+      name: Entity
+      description: The entity to explain.
+      required: true
+      selector:
+        entity:

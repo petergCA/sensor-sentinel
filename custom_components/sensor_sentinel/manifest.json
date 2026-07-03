@@ -1,0 +1,12 @@
+{
+  "domain": "sensor_sentinel",
+  "name": "Sensor Sentinel",
+  "codeowners": ["@petergCA"],
+  "config_flow": true,
+  "documentation": "https://github.com/petergCA/sensor-sentinel",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/petergCA/sensor-sentinel/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
