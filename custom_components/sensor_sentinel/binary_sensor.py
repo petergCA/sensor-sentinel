@@ -32,6 +32,9 @@ class SentinelProblemBinarySensor(SentinelEntity, BinarySensorEntity):
     def __init__(self, coordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_problem"
+        # Force a clean, un-prefixed object_id (binary_sensor.sentinel_problem)
+        # rather than the device-name-derived binary_sensor.sensor_sentinel_* default.
+        self.entity_id = "binary_sensor.sentinel_problem"
 
     @property
     def is_on(self) -> bool:

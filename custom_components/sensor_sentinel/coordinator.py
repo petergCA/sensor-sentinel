@@ -133,6 +133,15 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         ):
             self._start_grace(entity_id)
 
+    def all_incidents(self) -> list[dict]:
+        """The full current down-set as plain dicts.
+
+        Backs the websocket ``sensor_sentinel/list`` command so the card can
+        show every incident on demand, without the count sensor ever having to
+        carry an uncapped attribute payload (PRD §4.7 / §6).
+        """
+        return [inc.as_event_data() for inc in self._down.values()]
+
     def explain(self, entity_id: str) -> dict:
         """Answer 'why is this flagged / excluded?' for any entity (PRD §4a)."""
         match = self.exclusions.match(entity_id, time.time())

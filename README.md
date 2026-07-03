@@ -29,8 +29,11 @@ services.
   currently-down entities it would silence (no blind over-exclusion).
 - **Grouped, debounced notifications** — a burst of drops becomes one message
   rolled up by integration, plus recovery notices.
-- **Companion Lovelace card** — bundled and auto-registered; live incident list
-  grouped by integration with one-click **snooze / exclude / why?** actions.
+- **Companion Lovelace card** — bundled and auto-registered; the **full** live
+  incident list grouped by integration with one-click **snooze / exclude /
+  why?** actions. The card pulls the complete list on demand via a
+  `sensor_sentinel/list` websocket command, so the count sensor's attribute
+  payload stays capped no matter how many entities are down.
 - **Automation surface** — `sensor_sentinel.entity_down` /
   `entity_recovered` bus events carry full context.
 
@@ -89,8 +92,9 @@ Everything is in the integration's **Configure** dialog:
 
 ## Status
 
-v0.1 — MVP (detection, exclusions UI, notifications, entities/events, card).
-Auto-recovery is a planned later phase and is **not** included.
+v0.2 — MVP plus the full-list card (detection, exclusions UI, notifications,
+entities/events, card with on-demand full incident list). Auto-recovery is a
+planned later phase and is **not** included.
 
 ## License
 

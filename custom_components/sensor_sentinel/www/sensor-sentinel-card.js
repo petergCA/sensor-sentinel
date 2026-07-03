@@ -21,7 +21,35 @@ class SensorSentinelCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    // Re-pull the full incident list whenever the count sensor updates. The
+    // sensor attribute only carries a capped sample; the complete list comes
+    // from the sensor_sentinel/list websocket command.
+    const st = this._stateObj();
+    const stamp = st ? st.last_updated : null;
+    if (stamp && stamp !== this._stamp) {
+      this._stamp = stamp;
+      this._fetchFull();
+    }
     this._render();
+  }
+
+  async _fetchFull() {
+    if (this._fetching || !this._hass) return;
+    this._fetching = true;
+    try {
+      const res = await this._hass.connection.sendMessagePromise({
+        type: "sensor_sentinel/list",
+      });
+      this._incidents = res.incidents || [];
+      this._full = true;
+    } catch (e) {
+      // Fall back to the capped attribute sample if the command is unavailable
+      // (e.g. an older integration version behind this card).
+      this._full = false;
+    } finally {
+      this._fetching = false;
+      this._render();
+    }
   }
 
   getCardSize() {
@@ -94,7 +122,9 @@ class SensorSentinelCard extends HTMLElement {
 
     const count = Number(st.state) || 0;
     const attrs = st.attributes || {};
-    const incidents = attrs.entities || [];
+    // Prefer the full websocket-fetched list; fall back to the capped sample.
+    const usingFull = this._full && Array.isArray(this._incidents);
+    const incidents = usingFull ? this._incidents : attrs.entities || [];
     const byIntegration = attrs.by_integration || {};
 
     // Group the sampled incidents by integration for a rolled-up view.
@@ -118,8 +148,8 @@ class SensorSentinelCard extends HTMLElement {
         .sort()
         .map((integration) => this._renderGroup(integration, groups[integration]))
         .join("");
-      if (attrs.truncated) {
-        body += `<div class="ss-note">Showing a sample; more incidents not listed (attribute payload is capped for performance).</div>`;
+      if (!usingFull && attrs.truncated) {
+        body += `<div class="ss-note">Showing a sample of ${incidents.length}; the full list couldn't be fetched. Check the integration is up to date.</div>`;
       }
     }
 
@@ -237,4 +267,4 @@ window.customCards.push({
   name: "Sensor Sentinel Card",
   description: "Live unavailable-entity incidents with one-click snooze/exclude.",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.1.0 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.2.0 ", "background:#0288d1;color:#fff", "");

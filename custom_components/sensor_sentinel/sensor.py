@@ -37,6 +37,9 @@ class SentinelCountSensor(SentinelEntity, SensorEntity):
     def __init__(self, coordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_unavailable_count"
+        # Force a clean, un-prefixed object_id (sensor.sentinel_unavailable_count)
+        # rather than the device-name-derived sensor.sensor_sentinel_* default.
+        self.entity_id = "sensor.sentinel_unavailable_count"
 
     @property
     def native_value(self) -> int:

@@ -15,6 +15,7 @@ from .const import DATA_MANAGER, DOMAIN
 from .coordinator import SentinelCoordinator
 from .notify import SentinelNotifier
 from .services import async_register_services, async_unregister_services
+from .websocket import async_register_websocket
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await async_register_services(hass)
+    async_register_websocket(hass)
     await _async_register_card(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
