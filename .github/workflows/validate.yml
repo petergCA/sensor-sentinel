@@ -22,3 +22,7 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # brands requires assets in the home-assistant/brands repo, which a
+          # personal custom integration is not submitted to. Everything else
+          # (hacsjson, manifest, topics) must pass.
+          ignore: brands
