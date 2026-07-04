@@ -14,6 +14,7 @@ const CONFIG_DEFAULTS = {
   sort: "count",
   collapse_by_default: false,
   zwave_ping: true,
+  sparkline_hours: 0,
 };
 
 // Schema for the visual (ha-form) editor.
@@ -33,6 +34,12 @@ const EDITOR_SCHEMA = [
   },
   { name: "collapse_by_default", selector: { boolean: {} } },
   { name: "zwave_ping", selector: { boolean: {} } },
+  {
+    name: "sparkline_hours",
+    selector: {
+      number: { min: 0, max: 168, step: 1, mode: "box", unit_of_measurement: "h" },
+    },
+  },
 ];
 
 const EDITOR_LABELS = {
@@ -40,6 +47,7 @@ const EDITOR_LABELS = {
   sort: "Sort integrations",
   collapse_by_default: "Collapse integrations by default",
   zwave_ping: "Show Z-Wave ping button",
+  sparkline_hours: "Trend sparkline window (hours, 0 = off)",
 };
 
 class SensorSentinelCard extends HTMLElement {
@@ -54,6 +62,9 @@ class SensorSentinelCard extends HTMLElement {
   setConfig(config) {
     this._config = { ...CONFIG_DEFAULTS, ...config };
     this._collapsed = this._collapsed || {};
+    // Invalidate any cached history so a changed window refetches promptly.
+    this._historyFetchedAt = 0;
+    this._history = null;
   }
 
   set hass(hass) {
@@ -67,7 +78,80 @@ class SensorSentinelCard extends HTMLElement {
       this._stamp = stamp;
       this._fetchFull();
     }
+    this._maybeFetchHistory();
     this._render();
+  }
+
+  async _maybeFetchHistory() {
+    const hours = Number(this._config.sparkline_hours) || 0;
+    if (!hours || !this._hass) {
+      this._history = null;
+      return;
+    }
+    // Self-throttle: at most one recorder query per 30s (set hass fires often).
+    const now = Date.now();
+    if (this._historyFetching || now - (this._historyFetchedAt || 0) < 30000) return;
+    this._historyFetching = true;
+    this._historyFetchedAt = now;
+    try {
+      const res = await this._hass.callWS({
+        type: "history/history_during_period",
+        start_time: new Date(now - hours * 3600 * 1000).toISOString(),
+        end_time: new Date(now).toISOString(),
+        entity_ids: [this._config.entity],
+        minimal_response: true,
+        no_attributes: true,
+      });
+      const series = (res && res[this._config.entity]) || [];
+      this._history = series
+        .map((s) => ({
+          t: (s.lu ?? s.lc) ? (s.lu ?? s.lc) * 1000 : new Date(s.last_updated || s.last_changed).getTime(),
+          v: Number(s.s ?? s.state),
+        }))
+        .filter((p) => Number.isFinite(p.v) && Number.isFinite(p.t));
+    } catch (e) {
+      this._history = null;
+    } finally {
+      this._historyFetching = false;
+      this._render();
+    }
+  }
+
+  _sparklineSVG() {
+    const hours = Number(this._config.sparkline_hours) || 0;
+    if (!hours) return "";
+    const pts = this._history;
+    if (!pts || pts.length < 2) {
+      return `<div class="ss-spark-wrap"><div class="ss-spark-cap">${hours}h trend</div><div class="ss-spark-empty">gathering history…</div></div>`;
+    }
+    const W = 400;
+    const H = 40;
+    const pad = 2;
+    const now = Date.now();
+    const t0 = now - hours * 3600 * 1000;
+    const span = now - t0 || 1;
+    const vals = pts.map((p) => p.v);
+    const vmax = Math.max(...vals);
+    const vmin = Math.min(...vals);
+    const range = vmax - vmin || 1;
+    const xy = (p) => {
+      const fx = Math.min(1, Math.max(0, (p.t - t0) / span));
+      const x = pad + fx * (W - 2 * pad);
+      const y = pad + (1 - (p.v - vmin) / range) * (H - 2 * pad);
+      return [x, y];
+    };
+    const line = pts.map((p) => xy(p).map((n) => n.toFixed(1)).join(",")).join(" ");
+    const [lx, ly] = xy(pts[pts.length - 1]);
+    const area = `${pad},${H - pad} ${line} ${lx.toFixed(1)},${H - pad}`;
+    return `
+      <div class="ss-spark-wrap">
+        <div class="ss-spark-cap">${hours}h trend · min ${vmin} / max ${vmax}</div>
+        <svg class="ss-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+          <polygon class="ss-spark-area" points="${area}" />
+          <polyline class="ss-spark-line" points="${line}" />
+          <circle class="ss-spark-dot" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2" />
+        </svg>
+      </div>`;
   }
 
   async _fetchFull() {
@@ -207,9 +291,10 @@ class SensorSentinelCard extends HTMLElement {
         <div class="ss-count ${count ? "bad" : "ok"}">${count}</div>
         <div class="ss-headmeta">
           <div class="ss-title">Sensor Sentinel</div>
-          <div class="ss-sub">${count ? "entities down" : "all clear"}</div>
+          <div class="ss-sub">${count ? "entities down and/or unavailable" : "all clear"}</div>
         </div>
       </div>
+      ${this._sparklineSVG()}
       <div class="ss-list">${body}</div>
     `);
     this._bind();
@@ -321,6 +406,14 @@ class SensorSentinelCard extends HTMLElement {
           .ss-count.ok { color:var(--success-color,#43a047); }
           .ss-title { font-weight:600; }
           .ss-sub { color:var(--secondary-text-color); font-size:.85rem; }
+          .ss-spark-wrap { margin:10px 0 2px; }
+          .ss-spark-cap { color:var(--secondary-text-color); font-size:.72rem; margin-bottom:2px; }
+          .ss-spark { width:100%; height:40px; display:block; }
+          .ss-spark-line { fill:none; stroke:var(--primary-color,#03a9f4); stroke-width:1.5;
+            vector-effect:non-scaling-stroke; }
+          .ss-spark-area { fill:var(--primary-color,#03a9f4); opacity:.12; stroke:none; }
+          .ss-spark-dot { fill:var(--primary-color,#03a9f4); }
+          .ss-spark-empty { color:var(--secondary-text-color); font-size:.75rem; font-style:italic; }
           .ss-group { margin-top:8px; }
           .ss-group-head { display:flex; align-items:center; gap:8px; cursor:pointer;
             font-weight:600; padding:4px 0; border-bottom:1px solid var(--divider-color); }
@@ -395,4 +488,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.4.1 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.5.0 ", "background:#0288d1;color:#fff", "");

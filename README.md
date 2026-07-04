@@ -35,7 +35,9 @@ services.
   `zwave_js`) — with one-click **snooze / exclude / why?** actions, plus a
   **ping** button on Z-Wave rows (`zwave_js.ping`) to wake a dead node. Options:
   sort integrations by down-count or alphabetically, collapse groups by default
-  (off by default), and toggle the Z-Wave ping button. The card pulls the
+  (off by default), toggle the Z-Wave ping button, and an optional **trend
+  sparkline** of the down-count over a configurable window (in hours, from
+  recorder history). The card pulls the
   complete list on demand via a `sensor_sentinel/list` websocket command, so the
   count sensor's attribute payload stays capped no matter how many entities are
   down.
@@ -97,7 +99,7 @@ Everything is in the integration's **Configure** dialog:
 
 ## Status
 
-v0.4 — MVP plus the full-list card with a visual editor, integration display
+v0.5 — MVP plus the full-list card with a visual editor, integration display names, count/name sorting, collapse-by-default, a Z-Wave ping action, and an optional trend sparkline (detection, exclusions UI, notifications, entities/events). Auto-recovery is a planned later phase and is **not**
 names, count/name sorting, collapse-by-default, and a Z-Wave ping action
 (detection, exclusions UI, notifications, entities/events). Auto-recovery is a
 planned later phase and is **not** included.
