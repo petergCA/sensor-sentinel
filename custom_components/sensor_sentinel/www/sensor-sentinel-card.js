@@ -211,7 +211,8 @@ class SensorSentinelCard extends HTMLElement {
       );
       const r = res?.response || {};
       let msg;
-      if (r.result === "down") msg = `Down since ${r.since} (state: ${r.state}).`;
+      if (r.result === "down")
+        msg = `Down since ${this._fmtDate(r.since)} (state: ${r.state}).`;
       else if (r.result === "excluded")
         msg = `Excluded by ${r.rule_type} rule: ${r.value}`;
       else if (r.result === "pending_grace")
@@ -220,6 +221,33 @@ class SensorSentinelCard extends HTMLElement {
       window.alert(`${entityId}\n\n${msg}`);
     } catch (e) {
       window.alert(`Could not explain ${entityId}: ${e}`);
+    }
+  }
+
+  _fmtDate(iso) {
+    // Format an ISO timestamp using the user's HA language, 12/24-hour
+    // preference, and time-zone preference (server vs. browser-local).
+    if (!iso) return iso;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const locale = this._hass?.locale || {};
+    const opts = {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    };
+    if (locale.time_format === "12") opts.hour12 = true;
+    else if (locale.time_format === "24") opts.hour12 = false;
+    // "language"/"system" (or unset) → let the locale decide.
+    if (locale.time_zone === "server" && this._hass?.config?.time_zone) {
+      opts.timeZone = this._hass.config.time_zone;
+    }
+    try {
+      return new Intl.DateTimeFormat(locale.language || undefined, opts).format(d);
+    } catch (e) {
+      return d.toLocaleString();
     }
   }
 
@@ -488,4 +516,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.5.0 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.5.1 ", "background:#0288d1;color:#fff", "");
