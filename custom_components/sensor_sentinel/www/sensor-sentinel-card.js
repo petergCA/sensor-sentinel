@@ -9,13 +9,36 @@
 
 const DEFAULT_ENTITY = "sensor.sentinel_unavailable_count";
 
+const CONFIG_DEFAULTS = {
+  entity: DEFAULT_ENTITY,
+  collapse_by_default: false,
+  zwave_ping: true,
+};
+
+// Schema for the visual (ha-form) editor.
+const EDITOR_SCHEMA = [
+  { name: "entity", required: true, selector: { entity: { domain: "sensor" } } },
+  { name: "collapse_by_default", selector: { boolean: {} } },
+  { name: "zwave_ping", selector: { boolean: {} } },
+];
+
+const EDITOR_LABELS = {
+  entity: "Count entity",
+  collapse_by_default: "Collapse integrations by default",
+  zwave_ping: "Show Z-Wave ping button",
+};
+
 class SensorSentinelCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("sensor-sentinel-card-editor");
+  }
+
   static getStubConfig() {
-    return { entity: DEFAULT_ENTITY };
+    return { ...CONFIG_DEFAULTS };
   }
 
   setConfig(config) {
-    this._config = { entity: DEFAULT_ENTITY, ...config };
+    this._config = { ...CONFIG_DEFAULTS, ...config };
     this._collapsed = this._collapsed || {};
   }
 
@@ -168,7 +191,13 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   _renderGroup(integration, rows) {
-    const collapsed = this._collapsed[integration];
+    // A group's collapsed state: an explicit user toggle wins; otherwise fall
+    // back to the card's collapse_by_default option.
+    const collapsed =
+      integration in this._collapsed
+        ? this._collapsed[integration]
+        : !!this._config.collapse_by_default;
+    const canPing = integration === "zwave_js" && this._config.zwave_ping;
     const items = collapsed
       ? ""
       : rows
@@ -184,6 +213,11 @@ class SensorSentinelCard extends HTMLElement {
             )}</div>
         </div>
         <div class="ss-actions">
+          ${
+            canPing
+              ? `<button data-act="ping" data-eid="${inc.entity_id}" title="Ping Z-Wave node">📡</button>`
+              : ""
+          }
           <button data-act="why" data-eid="${inc.entity_id}" title="Why?">?</button>
           <button data-act="snooze" data-eid="${inc.entity_id}" title="Snooze">💤</button>
           <button data-act="exclude" data-eid="${inc.entity_id}" title="Exclude">🚫</button>
@@ -206,7 +240,13 @@ class SensorSentinelCard extends HTMLElement {
     this.querySelectorAll("[data-toggle]").forEach((el) =>
       el.addEventListener("click", () => {
         const k = el.getAttribute("data-toggle");
-        this._collapsed[k] = !this._collapsed[k];
+        // Toggle from the *effective* state so the first click behaves
+        // correctly even when collapse_by_default has set the initial state.
+        const current =
+          k in this._collapsed
+            ? this._collapsed[k]
+            : !!this._config.collapse_by_default;
+        this._collapsed[k] = !current;
         this._render();
       })
     );
@@ -217,6 +257,29 @@ class SensorSentinelCard extends HTMLElement {
         if (act === "why") this._why(eid);
         else if (act === "snooze") this._snooze(eid);
         else if (act === "exclude") this._exclude(eid);
+        else if (act === "ping") this._ping(eid);
+      })
+    );
+  }
+
+  async _ping(entityId) {
+    try {
+      // zwave_js.ping wakes/round-trips the node; if it recovers it leaves the
+      // bad state and drops off the list on the next update.
+      await this._hass.callService("zwave_js", "ping", {}, { entity_id: entityId });
+      this._toast(`Pinged ${entityId}`);
+    } catch (e) {
+      this._toast(`Ping failed for ${entityId}: ${e}`);
+    }
+  }
+
+  _toast(message) {
+    // Fire HA's global toast rather than a blocking alert().
+    this.dispatchEvent(
+      new CustomEvent("hass-notification", {
+        detail: { message },
+        bubbles: true,
+        composed: true,
       })
     );
   }
@@ -260,11 +323,54 @@ class SensorSentinelCard extends HTMLElement {
   }
 }
 
+/**
+ * Visual editor for the card — an ha-form driven by EDITOR_SCHEMA. Presence of
+ * SensorSentinelCard.getConfigElement() makes HA offer the "Visual editor".
+ */
+class SensorSentinelCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...CONFIG_DEFAULTS, ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (schema) => EDITOR_LABELS[schema.name] || schema.name;
+      this._form.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        // Preserve type and any keys ha-form doesn't manage.
+        const config = { ...this._config, ...ev.detail.value };
+        this.dispatchEvent(
+          new CustomEvent("config-changed", {
+            detail: { config },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      });
+      this.appendChild(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.schema = EDITOR_SCHEMA;
+    this._form.data = this._config;
+  }
+}
+
+customElements.define("sensor-sentinel-card-editor", SensorSentinelCardEditor);
 customElements.define("sensor-sentinel-card", SensorSentinelCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "sensor-sentinel-card",
   name: "Sensor Sentinel Card",
-  description: "Live unavailable-entity incidents with one-click snooze/exclude.",
+  description: "Live unavailable-entity incidents with one-click snooze/exclude/ping.",
+  preview: true,
+  documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.2.0 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.3.0 ", "background:#0288d1;color:#fff", "");
