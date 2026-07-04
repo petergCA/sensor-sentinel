@@ -172,7 +172,6 @@ class SensorSentinelCard extends HTMLElement {
     // Prefer the full websocket-fetched list; fall back to the capped sample.
     const usingFull = this._full && Array.isArray(this._incidents);
     const incidents = usingFull ? this._incidents : attrs.entities || [];
-    const byIntegration = attrs.by_integration || {};
 
     // Group the sampled incidents by integration for a rolled-up view.
     const groups = {};
@@ -180,12 +179,6 @@ class SensorSentinelCard extends HTMLElement {
       const key = inc.integration || "unknown";
       (groups[key] = groups[key] || []).push(inc);
     }
-
-    const chips = Object.entries(byIntegration)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([k, v]) => `<span class="ss-chip">${this._integrationName(k)}: ${v}</span>`)
-      .join("");
 
     // Order the groups: by number of down entities (most first), or by name.
     const sortMode = this._config.sort || "count";
@@ -217,7 +210,6 @@ class SensorSentinelCard extends HTMLElement {
           <div class="ss-sub">${count ? "entities down" : "all clear"}</div>
         </div>
       </div>
-      <div class="ss-chips">${chips}</div>
       <div class="ss-list">${body}</div>
     `);
     this._bind();
@@ -329,9 +321,6 @@ class SensorSentinelCard extends HTMLElement {
           .ss-count.ok { color:var(--success-color,#43a047); }
           .ss-title { font-weight:600; }
           .ss-sub { color:var(--secondary-text-color); font-size:.85rem; }
-          .ss-chips { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 4px; }
-          .ss-chip { background:var(--secondary-background-color); border-radius:12px;
-            padding:2px 8px; font-size:.75rem; }
           .ss-group { margin-top:8px; }
           .ss-group-head { display:flex; align-items:center; gap:8px; cursor:pointer;
             font-weight:600; padding:4px 0; border-bottom:1px solid var(--divider-color); }
@@ -406,4 +395,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.4.0 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.4.1 ", "background:#0288d1;color:#fff", "");
