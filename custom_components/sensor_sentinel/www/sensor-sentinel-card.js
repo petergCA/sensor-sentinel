@@ -84,8 +84,7 @@ class SensorSentinelCard extends HTMLElement {
     this._config = { ...CONFIG_DEFAULTS, ...config };
     this._collapsed = this._loadCollapsed();
     this._filter = this._filter || "";
-    this._snoozeMenuFor = null;
-    this._disableConfirmFor = null;
+    this._modal = null;
     // Invalidate cached history so a changed window refetches promptly.
     this._historyFetchedAt = 0;
     this._history = null;
@@ -167,9 +166,9 @@ class SensorSentinelCard extends HTMLElement {
   // -- Actions -------------------------------------------------------------
 
   _snoozeMinutes(entityId, minutes) {
-    this._snoozeMenuFor = null;
+    this._modal = null;
     this._hass.callService("sensor_sentinel", "snooze", { entity_id: entityId, minutes });
-    this._toast(`Snoozed ${entityId} for ${minutes}m`);
+    this._toast(`Snoozed ${this._nameFor(entityId)} for ${minutes} min`);
     this._render();
   }
 
@@ -180,14 +179,14 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   async _disableEntity(entityId) {
-    this._disableConfirmFor = null;
+    this._modal = null;
     try {
       await this._hass.callWS({
         type: "config/entity_registry/update",
         entity_id: entityId,
         disabled_by: "user",
       });
-      this._toast(`Disabled ${entityId} — re-enable in Settings → Entities`);
+      this._toast(`Disabled ${this._nameFor(entityId)} — re-enable in Settings → Entities`);
     } catch (e) {
       this._toast(`Could not disable ${entityId} (admin required?): ${e}`);
     }
@@ -195,6 +194,8 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   async _why(entityId) {
+    const name = this._nameFor(entityId);
+    const rows = [["Entity", entityId]];
     try {
       const res = await this._hass.callService(
         "sensor_sentinel",
@@ -205,18 +206,46 @@ class SensorSentinelCard extends HTMLElement {
         true
       );
       const r = res?.response || {};
-      let msg;
-      if (r.result === "down")
-        msg = `${entityId}: down since ${this._fmtDate(r.since)} (${r.state})${r.stale ? " — stale" : ""}`;
-      else if (r.result === "excluded")
-        msg = `${entityId}: excluded by ${r.rule_type} rule (${r.value})`;
-      else if (r.result === "pending_grace")
-        msg = `${entityId}: bad, waiting out the grace window (${r.state})`;
-      else msg = `${entityId}: ${JSON.stringify(r)}`;
-      this._toast(msg);
+      if (r.result === "down") {
+        rows.push(["Status", r.stale ? "Down · stale (treated as retired)" : "Down"]);
+        rows.push(["Down since", this._fmtDate(r.since)]);
+        rows.push(["Current state", r.state]);
+      } else if (r.result === "excluded") {
+        rows.push(["Status", "Excluded from Sentinel"]);
+        rows.push(["Matched rule", `${r.rule_type} = ${r.value}`]);
+      } else if (r.result === "pending_grace") {
+        rows.push(["Status", "Bad — waiting out the grace window"]);
+        rows.push(["Current state", r.state]);
+      } else if (r.result === "bad_awaiting_grace") {
+        rows.push(["Status", "Bad — inside the grace window"]);
+        rows.push(["Current state", r.state]);
+      } else if (r.result === "ok") {
+        rows.push(["Status", "OK"]);
+        rows.push(["Current state", r.state]);
+      } else if (r.result === "missing") {
+        rows.push(["Status", "Not found in Home Assistant"]);
+      } else {
+        rows.push(["Detail", JSON.stringify(r)]);
+      }
     } catch (e) {
-      this._toast(`Could not explain ${entityId}: ${e}`);
+      rows.push(["Error", String(e)]);
     }
+    this._openModal({ kind: "why", eid: entityId, name, rows });
+  }
+
+  _nameFor(eid) {
+    const inc = (this._incidents || []).find((i) => i.entity_id === eid);
+    return inc?.name || this._hass?.states?.[eid]?.attributes?.friendly_name || eid;
+  }
+
+  _openModal(modal) {
+    this._modal = modal;
+    this._render();
+  }
+
+  _closeModal() {
+    this._modal = null;
+    this._render();
   }
 
   async _ping(entityId) {
@@ -451,7 +480,7 @@ class SensorSentinelCard extends HTMLElement {
       ${this._sparklineSVG()}
       ${count ? `<input class="ss-search" type="search" placeholder="Filter by name, area, integration…" value="${filterVal}" />` : ""}
       <div class="ss-list">${body}</div>
-    `);
+    `) + this._renderModal();
     this._bind();
   }
 
@@ -481,25 +510,12 @@ class SensorSentinelCard extends HTMLElement {
       (inc.flapping ? ' <span class="ss-badge ss-flap">flapping</span>' : "") +
       (inc.stale ? ' <span class="ss-badge ss-stale">stale</span>' : "");
 
-    let actions;
-    if (this._snoozeMenuFor === eid) {
-      actions =
-        SNOOZE_PRESETS.map(
-          ([lbl, m]) => `<button class="ss-preset" data-snoozem="${m}" data-eid="${eid}">${lbl}</button>`
-        ).join("") + `<button data-act="snooze-cancel" data-eid="${eid}" title="Cancel">×</button>`;
-    } else if (this._disableConfirmFor === eid) {
-      actions = `
-        <span class="ss-confirm">Disable in HA?</span>
-        <button class="ss-preset ss-danger" data-act="disable-confirm" data-eid="${eid}">Disable</button>
-        <button data-act="disable-cancel" data-eid="${eid}" title="Cancel">×</button>`;
-    } else {
-      actions = `
-        ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
-        <button data-act="why" data-eid="${eid}" title="Why?">?</button>
-        <button data-act="snooze" data-eid="${eid}" title="Snooze">💤</button>
-        <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">🚫</button>
-        <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant"><ha-icon icon="mdi:power-off" class="ss-mdi"></ha-icon></button>`;
-    }
+    const actions = `
+      ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
+      <button data-act="why" data-eid="${eid}" title="Why?">?</button>
+      <button data-act="snooze" data-eid="${eid}" title="Snooze">💤</button>
+      <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">🚫</button>
+      <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant"><ha-icon icon="mdi:power-off" class="ss-mdi"></ha-icon></button>`;
     // Render the clickable area as a real <a> to the device page when the
     // entity has a device, so right-click / cmd-click / middle-click can open
     // it in a new tab. Plain left-clicks are intercepted for in-app nav.
@@ -561,36 +577,18 @@ class SensorSentinelCard extends HTMLElement {
     this.querySelectorAll("button[data-act]").forEach((btn) =>
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
+        e.preventDefault();
         const eid = btn.getAttribute("data-eid");
         const act = btn.getAttribute("data-act");
         if (act === "why") this._why(eid);
-        else if (act === "snooze") {
-          this._snoozeMenuFor = eid;
-          this._render();
-        } else if (act === "snooze-cancel") {
-          this._snoozeMenuFor = null;
-          this._render();
-        } else if (act === "exclude") this._exclude(eid);
+        else if (act === "snooze") this._openModal({ kind: "snooze", eid, name: this._nameFor(eid) });
+        else if (act === "exclude") this._exclude(eid);
         else if (act === "ping") this._ping(eid);
-        else if (act === "disable") {
-          this._disableConfirmFor = eid;
-          this._render();
-        } else if (act === "disable-cancel") {
-          this._disableConfirmFor = null;
-          this._render();
-        } else if (act === "disable-confirm") this._disableEntity(eid);
+        else if (act === "disable") this._openModal({ kind: "disable", eid, name: this._nameFor(eid) });
       })
     );
 
-    this.querySelectorAll("button[data-snoozem]").forEach((btn) =>
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this._snoozeMinutes(
-          btn.getAttribute("data-eid"),
-          Number(btn.getAttribute("data-snoozem"))
-        );
-      })
-    );
+    this._bindModal();
 
     this.querySelectorAll("button[data-gact]").forEach((btn) =>
       btn.addEventListener("click", (e) => {
@@ -606,6 +604,65 @@ class SensorSentinelCard extends HTMLElement {
         if (!ids.length) return;
         if (btn.getAttribute("data-gact") === "snooze") this._bulkSnooze(ids, 60);
         else this._bulkExclude(ids);
+      })
+    );
+  }
+
+  _renderModal() {
+    const m = this._modal;
+    if (!m) return "";
+    let title = "";
+    let bodyHtml = "";
+    let actionsHtml = `<button class="ss-mbtn" data-mact="close">Close</button>`;
+    if (m.kind === "why") {
+      title = m.name;
+      bodyHtml = m.rows
+        .map(
+          ([k, v]) =>
+            `<div class="ss-mrow"><span class="ss-mk">${k}</span><span class="ss-mv">${v}</span></div>`
+        )
+        .join("");
+    } else if (m.kind === "snooze") {
+      title = `Snooze ${m.name}`;
+      bodyHtml =
+        `<div class="ss-msub">Mute this entity so it drops off the list for a while.</div>` +
+        `<div class="ss-mgrid">` +
+        SNOOZE_PRESETS.map(
+          ([lbl, mins]) => `<button class="ss-mbtn ss-mgridbtn" data-mact="snooze" data-min="${mins}">${lbl}</button>`
+        ).join("") +
+        `</div>`;
+      actionsHtml = `<button class="ss-mbtn" data-mact="close">Cancel</button>`;
+    } else if (m.kind === "disable") {
+      title = `Disable ${m.name}?`;
+      bodyHtml = `<div class="ss-msub">This disables the entity in Home Assistant — it is removed until you re-enable it in <b>Settings → Devices &amp; Services → Entities</b> (needs a reload). This is different from <b>Exclude</b>, which only hides it from Sensor Sentinel.</div>`;
+      actionsHtml =
+        `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
+        `<button class="ss-mbtn ss-mdanger" data-mact="disable">Disable</button>`;
+    }
+    return `
+      <div class="ss-modal-overlay">
+        <div class="ss-modal" role="dialog" aria-modal="true">
+          <div class="ss-modal-title">${title}</div>
+          <div class="ss-modal-body">${bodyHtml}</div>
+          <div class="ss-modal-actions">${actionsHtml}</div>
+        </div>
+      </div>`;
+  }
+
+  _bindModal() {
+    const overlay = this.querySelector(".ss-modal-overlay");
+    if (!overlay) return;
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) this._closeModal(); // backdrop click closes
+    });
+    this.querySelectorAll(".ss-modal [data-mact]").forEach((el) =>
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const act = el.getAttribute("data-mact");
+        if (act === "close") this._closeModal();
+        else if (act === "snooze")
+          this._snoozeMinutes(this._modal.eid, Number(el.getAttribute("data-min")));
+        else if (act === "disable") this._disableEntity(this._modal.eid);
       })
     );
   }
@@ -652,13 +709,31 @@ class SensorSentinelCard extends HTMLElement {
           .ss-flap { color:var(--warning-color,#ffa600); }
           .ss-stale { color:var(--secondary-text-color); }
           .ss-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
-          .ss-preset { font-size:.78rem !important; border:1px solid var(--divider-color) !important; }
-          .ss-danger { color:var(--error-color,#db4437) !important; }
-          .ss-confirm { font-size:.78rem; color:var(--secondary-text-color); }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
           .ss-empty { padding:14px 2px; color:var(--secondary-text-color); }
           .ss-note { color:var(--secondary-text-color); font-size:.75rem; margin-top:8px; font-style:italic; }
+          .ss-modal-overlay { position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.55);
+            display:flex; align-items:center; justify-content:center; padding:16px; }
+          .ss-modal { background:var(--ha-card-background,var(--card-background-color,#fff));
+            color:var(--primary-text-color); border-radius:16px; padding:20px 22px; width:100%;
+            max-width:440px; box-sizing:border-box; box-shadow:0 10px 48px rgba(0,0,0,.45); }
+          .ss-modal-title { font-size:1.25rem; font-weight:700; margin-bottom:12px; word-break:break-word; }
+          .ss-modal-body { font-size:1rem; line-height:1.55; }
+          .ss-mrow { display:flex; gap:12px; padding:7px 0; border-bottom:1px solid var(--divider-color); }
+          .ss-mrow:last-child { border-bottom:none; }
+          .ss-mk { color:var(--secondary-text-color); min-width:96px; flex-shrink:0; }
+          .ss-mv { font-weight:500; word-break:break-word; }
+          .ss-msub { color:var(--secondary-text-color); margin-bottom:14px; }
+          .ss-mgrid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+          .ss-modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
+          .ss-mbtn { font-size:1rem; padding:10px 18px; border-radius:10px; cursor:pointer;
+            border:1px solid var(--divider-color); background:var(--secondary-background-color);
+            color:var(--primary-text-color); }
+          .ss-mbtn:hover { background:var(--divider-color); }
+          .ss-mgridbtn { padding:14px; font-size:1.05rem; font-weight:600; }
+          .ss-mdanger { border-color:var(--error-color,#db4437); color:var(--error-color,#db4437);
+            background:transparent; }
         </style>
         ${inner}
       </ha-card>`;
@@ -709,4 +784,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.3 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.4 ", "background:#0288d1;color:#fff", "");
