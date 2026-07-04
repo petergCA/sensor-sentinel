@@ -1,76 +1,174 @@
 # Sensor Sentinel
 
 A **performance-safe, event-driven watchdog** for Home Assistant that answers
-"what's unavailable right now, and why?" across the whole fleet — without ever
-scanning every entity on every state change.
+one question well: **"what's unavailable right now, and why?"** — across your
+whole fleet, without ever rescanning every entity on every state change.
 
 > Built to replace a `sensor.unavailable_entities` template that took Core down
 > (2.3 GB RSS, 44% CPU) by rescanning ~6,800 entities on every event. Sensor
-> Sentinel maintains an **incremental in-memory set** instead: one scan at
-> startup, then O(1) work per `state_changed` event.
+> Sentinel keeps an **incremental in-memory set** instead: one scan at startup,
+> then O(1) work per `state_changed` event.
 
-## Why an integration (not a template or add-on)
+It ships with a companion Lovelace card, so once it's installed you get a live,
+grouped, actionable list of everything that's down — with one-click snooze,
+exclude, disable, and Z-Wave ping.
+
+---
+
+## Contents
+
+- [Why a custom integration](#why-a-custom-integration)
+- [Features](#features)
+- [Install](#install)
+- [Using the card](#using-the-card)
+- [Configuration](#configuration)
+- [Entities](#entities)
+- [Events](#events)
+- [Services](#services)
+- [How it stays fast](#how-it-stays-fast)
+- [Good to know](#good-to-know)
+- [License](#license)
+
+---
+
+## Why a custom integration
 
 A template sensor can only poll or scan-per-event — neither is acceptable at
 several thousand entities. An add-on can't cleanly reach the entity/device
 registry. A custom integration listens on the event bus, keeps an incremental
-set, enriches from cached registry maps, and exposes clean entities, events and
+set, enriches from cached registry maps, and exposes clean entities, events, and
 services.
 
 ## Features
 
-- **Incremental detection** — a single bus listener maintains the down-set. No
-  fleet-wide scan on any event; attribute payloads are hard-capped.
+### Detection
+
+- **Incremental** — a single bus listener maintains the down-set. No fleet-wide
+  scan on any event; sensor attribute payloads are hard-capped.
 - **Grace window** — a per-entity debounce (default 60s) suppresses flaps: an
-  entity must stay bad past the window before it becomes an incident.
+  entity must stay bad past the window before it counts as an incident.
 - **Startup warmup** — entities already bad at boot are held for a warmup window
-  (default 120s) before counting, so transient boot-time unknowns never spike
-  the count.
-- **Durable state** — incident start-times and snoozes persist across restarts
-  (via the config Store), so durations and the trend survive a reboot.
-- **Opt-in self-healing** — off by default; when enabled, tries to recover a
-  stuck entity (Z-Wave ping, or reload the owning integration) with attempt
-  caps and cooldowns.
-- **Re-alert & stale-retire** — optionally re-notify on prolonged downtime, and
-  auto-drop long-dead incidents (retired devices) from the count.
-- **Rules over lists** — exclude by **domain**, **integration**, **entity_id
-  glob**, or **explicit entity**, all from the UI. No hand-edited YAML.
+  (default 120s) before counting, so transient boot-time unknowns (MQTT retained
+  values, Z-Wave interviews, device trackers) don't spike the count.
+- **Durable** — incident start-times and snoozes persist across restarts, so
+  durations and the trend sparkline survive a reboot.
+
+### Exclusions
+
+- **Rules, not lists** — exclude by **domain**, **integration**, **entity_id
+  glob** (e.g. `*_firmware`), or **explicit entity**, all from the UI. No
+  hand-edited YAML.
 - **Dry-run preview** — before saving a rule change, see exactly which
-  currently-down entities it would silence (no blind over-exclusion).
-- **Grouped, debounced notifications** — a burst of drops becomes one message
-  rolled up by integration, plus recovery notices.
-- **Companion Lovelace card** — bundled and auto-registered, with a **visual
-  editor** (no YAML needed). Shows the **full** live incident list grouped by
-  integration — using each integration's **display name** (e.g. "Z-Wave JS", not
-  `zwave_js`) — with one-click **snooze / exclude / why?** actions, plus a
-  **ping** button on Z-Wave rows (`zwave_js.ping`) to wake a dead node. Click a
-  row to open the entity's more-info dialog; **search/filter** the list; group
-  by **integration or area**; snooze/exclude a whole group at once; snooze from
-  quick presets. Options: sort by down-count or alphabetically, collapse groups
-  by default (off by default), toggle the Z-Wave ping button, and an optional
-  **trend sparkline** of the down-count over a configurable window (in hours,
-  from recorder history). Collapse state is remembered. The card pulls the
-  complete list on demand via a `sensor_sentinel/list` websocket command, so the
-  count sensor's attribute payload stays capped no matter how many entities are
-  down.
-- **Automation surface** — `sensor_sentinel.entity_down` /
-  `entity_recovered` bus events carry full context.
+  currently-down entities it would silence, so you never over-exclude blindly.
+- **Disabled entities are ignored** — an entity disabled in the registry is
+  dropped immediately, even if it lingers in the state machine until its
+  integration reloads.
+
+### Notifications
+
+- **Grouped & debounced** — a burst of drops becomes one message, rolled up by
+  integration, plus recovery notices. Sent to your mobile app and/or as a
+  persistent notification.
+- **Re-alert** (opt-in) — optionally re-notify when something is *still* down
+  after N hours.
+
+### Self-healing & housekeeping (opt-in, off by default)
+
+- **Auto-recovery** — try to heal a stuck entity: ping Z-Wave nodes, or reload
+  the owning integration, with attempt caps and cooldowns.
+- **Stale-retire** — automatically drop long-dead incidents (retired devices)
+  from the count after N days; they stay visible, flagged, in the card.
+
+### Companion Lovelace card
+
+Bundled and auto-registered — no separate install or resource setup — with a
+**visual editor** (no YAML). It shows the **full** live incident list (fetched
+on demand via a websocket command, so the sensor attribute stays capped no
+matter how many entities are down). See [Using the card](#using-the-card).
+
+### Automation surface
+
+`sensor_sentinel.entity_down` / `entity_recovered` / `entity_still_down` bus
+events carry full context for your own automations. See [Events](#events).
+
+## Install
+
+1. **HACS → ⋮ → Custom repositories** → add this repo, category **Integration**.
+2. Install **Sensor Sentinel**, then **restart Home Assistant**.
+3. **Settings → Devices & Services → Add Integration → Sensor Sentinel**.
+4. Add the card to a dashboard: **Add Card → Custom: Sensor Sentinel Card**.
+
+## Using the card
+
+Incidents are grouped (by integration or area) and sorted (by count or name).
+Each group and the header have controls:
+
+**Header**
+
+- **Count** — number of entities currently down.
+- **Expand all / Collapse all** — toggle every group at once (state is
+  remembered per dashboard).
+- **Search** — filter the list by name, area, or integration.
+- **Trend sparkline** *(optional)* — the down-count over the last N hours, from
+  recorder history.
+
+**Each incident row** — click the row to open the entity's **device page** (a
+real link, so right-click / cmd-click / middle-click open it in a new tab), plus
+action buttons:
+
+| Button | Action |
+| --- | --- |
+| **?** | **Why?** — a dialog explaining the entity's status (down since, current state, matched exclusion rule, …). |
+| **📡** | **Ping** the Z-Wave node (`zwave_js.ping`) to wake it — shown on Z-Wave rows only. |
+| **💤** | **Snooze** — mute the entity for a preset (15m / 1h / 8h / 1d). |
+| **⚠️** | **Exclude** — add a Sentinel rule so it's never reported. Stays active in HA; undo in **Configure**. |
+| **🚫** | **Disable** — disable the entity in Home Assistant entirely (removed until you re-enable it in Settings → Entities). |
+
+Group headers offer **snooze-all** and **exclude-all** for everything in the
+group. Snooze, exclude, and disable all open a confirmation dialog first.
+
+**Card options** (visual editor): count entity, group by *integration/area*,
+sort by *count/name*, collapse groups by default, show the Z-Wave ping button,
+and the trend sparkline window in hours (0 = off).
+
+## Configuration
+
+Everything lives in the integration's **Configure** dialog. Each field has
+inline help text.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Bad states** | `unavailable`, `unknown` | Which states count as "down". |
+| **Excluded domains** | `button, event, group, image, input_button, input_text, remote, scene, stt, tts` | Whole domains to never report (where `unknown` is normal). |
+| **Excluded integrations** | — | Whole integrations to never report. Picked from what's present in your system. |
+| **Excluded entity_id globs** | — | Patterns like `*_firmware`, `roborock_*`. |
+| **Excluded entities** | — | Specific entities to never report. |
+| **Grace window** | 60s | How long an entity must stay bad before it's reported. |
+| **Startup warmup** | 120s | Hold boot-time bad entities before counting them. |
+| **Integration rollup threshold** | 5 | Collapse a burst from one integration into a single rolled-up incident. |
+| **Re-alert if still down after** | 0 (off) | Re-notify after this many hours. |
+| **Auto-retire incidents after** | 0 (off) | Drop incidents down longer than this many days. |
+| **Automatic recovery** | off | Try to heal stuck entities (ping / reload) with guardrails. |
+| **Recovery delay** | 300s | How long down before the first recovery attempt. |
+| **Notification targets** | — | `notify.*` service names (without the `notify.` prefix). |
+| **Persistent notifications** | on | Also create in-HA persistent notifications. |
 
 ## Entities
 
 | Entity | Purpose |
 | --- | --- |
-| `sensor.sentinel_unavailable_count` | Live down-count; capped rollup attributes (`by_integration`, `by_area`, 25-row sample, `recovered_today`, `longest_down`, `stale_count`). |
-| `binary_sensor.sentinel_problem` | `device_class: problem`; on when anything is down. |
-| `sensor.sentinel_recovered_today` | Count of entities recovered so far today (resets at local midnight). |
-| `sensor.sentinel_longest_down` | Name of the entity down the longest; `entity_id`/`since` in attributes. |
+| `sensor.sentinel_unavailable_count` | Live down-count. Attributes: `by_integration`, `by_area`, a capped 25-row sample, `recovered_today`, `longest_down`, `stale_count`. |
+| `binary_sensor.sentinel_problem` | `device_class: problem` — on when anything is down. |
+| `sensor.sentinel_recovered_today` | Entities recovered so far today (resets at local midnight). |
+| `sensor.sentinel_longest_down` | Name of the entity down the longest; `entity_id` / `since` in attributes. |
 
 ## Events
 
 | Event | Data |
 | --- | --- |
-| `sensor_sentinel.entity_down` | `entity_id, state, name, integration, device, area, since, flapping` |
+| `sensor_sentinel.entity_down` | `entity_id, state, name, integration, device, area, since, flapping, stale` |
 | `sensor_sentinel.entity_recovered` | `entity_id, name` |
+| `sensor_sentinel.entity_still_down` | incident fields + `down_seconds` (fired by the opt-in re-alert) |
 
 ## Services
 
@@ -79,45 +177,37 @@ services.
 | `sensor_sentinel.snooze` | Mute an entity for N minutes. |
 | `sensor_sentinel.unsnooze` | Clear a snooze. |
 | `sensor_sentinel.exclude` | Add a permanent explicit-entity exclusion. |
-| `sensor_sentinel.explain` | Return why an entity is flagged/excluded (response). |
+| `sensor_sentinel.explain` | Return why an entity is flagged / excluded (service response). |
 
-## Installation (HACS)
-
-1. HACS → ⋮ → **Custom repositories** → add this repo, category **Integration**.
-2. Install **Sensor Sentinel**, then restart Home Assistant.
-3. **Settings → Devices & Services → Add Integration → Sensor Sentinel**.
-4. Add the card to a dashboard: **Add Card → Custom: Sensor Sentinel Card**
-   (the card is bundled with the integration — no separate install or resource
-   setup needed).
-
-## Configuration
-
-Everything is in the integration's **Configure** dialog:
-
-- **Bad states** — which states count as down (default `unavailable`, `unknown`).
-- **Excluded domains** — defaults to the domains where `unknown` is normal
-  (`button`, `event`, `image`, `input_button`, `input_text`, `remote`, `scene`,
-  `stt`, `tts`, `group`).
-- **Excluded integrations / globs / entities** — the rule types above.
-- **Grace window** and **integration rollup threshold**.
-- **Notification** targets and persistent-notification toggle.
-
-## Performance notes
+## How it stays fast
 
 - One `hass.states` scan at startup to seed the set; never again.
 - Per event: a state-set membership test and, at most, an O(rules) exclusion
-  check — only for entities that are bad or already tracked.
-- Registry enrichment happens per *incident* (post-grace), not per event, off
-  cached registry maps refreshed only on registry-update events.
-- Sensor writes are coalesced (≤1/sec) so a flapping storm can't thrash.
+  check — and only for entities that are bad or already tracked.
+- Registry enrichment (name / device / area) happens per *incident* (post-grace),
+  not per event, off cached registry maps refreshed only on registry updates.
+- Sensor writes are coalesced (≤1/sec) so a flapping storm can't thrash Core.
+- The full incident list is served on demand over a websocket command, so the
+  sensor's attribute payload never grows unbounded.
+
+## Good to know
+
+- **Exclude vs. Disable** — *Exclude* only tells Sentinel to ignore an entity;
+  it stays fully active in HA. *Disable* removes the entity from Home Assistant
+  entirely (re-enable it in Settings → Entities). Use exclude for noise, disable
+  for entities you truly don't want.
+- **Just disabled something and it's still listed?** Disabling an entity leaves
+  it in the state machine as `unavailable` until its integration reloads (e.g.
+  Z-Wave JS). Sentinel drops disabled entities on sight, and a reload/restart
+  clears them from HA for good.
+- **Count looks high right after a restart?** That's the startup warmup settling
+  — boot-time transients clear within the warmup window.
 
 ## Status
 
-v0.6 — adds durable state (persisted since + snoozes), a startup warmup window,
-insight sensors (recovered-today, longest-down), optional re-alert /
-stale-retire / auto-recovery (all off by default), and a much richer card
-(search, group-by-area, bulk group actions, more-info, snooze presets,
-remembered collapse). Auto-recovery is **opt-in** and conservative.
+Actively developed. Auto-recovery, re-alert, and stale-retire are **opt-in** and
+conservative (off by default), so the integration never acts on your system
+unless you ask it to.
 
 ## License
 
