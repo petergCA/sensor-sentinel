@@ -281,10 +281,11 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._unsub.append(
             self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._handle_state_changed)
         )
-        # Invalidate the platform cache whenever the entity registry changes.
+        # React to entity-registry changes (cache invalidation + drop entities
+        # that were removed or disabled).
         self._unsub.append(
             self.hass.bus.async_listen(
-                er.EVENT_ENTITY_REGISTRY_UPDATED, self._invalidate_registry_cache
+                er.EVENT_ENTITY_REGISTRY_UPDATED, self._on_registry_updated
             )
         )
         # Periodic housekeeping (re-alert / stale / auto-recovery).
@@ -333,8 +334,24 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             _LOGGER.debug("Final store save failed", exc_info=True)
 
     @callback
-    def _invalidate_registry_cache(self, _event: Event) -> None:
+    def _on_registry_updated(self, event: Event) -> None:
         self._platform_cache.clear()
+        entity_id = event.data.get("entity_id")
+        # Only tracked entities are worth a registry lookup (keep this cheap).
+        if not entity_id or (
+            entity_id not in self._down and entity_id not in self._pending
+        ):
+            return
+        # A disabled entity can linger in the state machine as `unavailable`
+        # until its integration reloads; it should not be reported meanwhile.
+        # Likewise drop anything removed from the registry.
+        entry = er.async_get(self.hass).async_get(entity_id)
+        if entry is None or entry.disabled_by is not None:
+            self._clear_tracking(entity_id)
+
+    def _is_registry_disabled(self, entity_id: str) -> bool:
+        entry = er.async_get(self.hass).async_get(entity_id)
+        return entry is not None and entry.disabled_by is not None
 
     @callback
     def _warmup_seed(self, _now=None) -> None:
@@ -358,6 +375,8 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 continue
             if self.exclusions.is_excluded(state.entity_id, now):
                 continue
+            if self._is_registry_disabled(state.entity_id):
+                continue  # disabled entities lingering pending a reload
             # Entities still bad after warmup are recorded as down immediately
             # (no grace, no notification storm on boot).
             since = known_since.get(state.entity_id) or self._stored_since.get(
