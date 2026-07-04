@@ -489,8 +489,9 @@ class SensorSentinelCard extends HTMLElement {
     const filterVal = (this._filter || "").replace(/"/g, "&quot;");
     const anyExpanded = orderedKeys.some((k) => !this._isCollapsed(k));
     const toggleAllBtn = orderedKeys.length
-      ? `<button class="ss-expandall" data-toggleall title="${anyExpanded ? "Collapse all" : "Expand all"}">
+      ? `<button class="ss-expandall" data-toggleall>
            <ha-icon icon="${anyExpanded ? "mdi:unfold-less-horizontal" : "mdi:unfold-more-horizontal"}"></ha-icon>
+           <span>${anyExpanded ? "Collapse all" : "Expand all"}</span>
          </button>`
       : "";
     this.innerHTML = this._wrap(`
@@ -758,10 +759,12 @@ class SensorSentinelCard extends HTMLElement {
           .ss-count.ok { color:var(--success-color,#43a047); }
           .ss-title { font-weight:600; }
           .ss-sub { color:var(--secondary-text-color); font-size:.85rem; }
-          .ss-expandall { margin-left:auto; align-self:center; background:none; border:none;
-            cursor:pointer; padding:6px; border-radius:8px; color:var(--secondary-text-color); }
+          .ss-expandall { margin-left:auto; align-self:center; display:inline-flex;
+            align-items:center; gap:4px; background:none; border:1px solid var(--divider-color);
+            cursor:pointer; padding:5px 10px; border-radius:8px; font-size:.85rem;
+            color:var(--secondary-text-color); white-space:nowrap; }
           .ss-expandall:hover { background:var(--secondary-background-color); }
-          .ss-expandall ha-icon { --mdc-icon-size:24px; display:block; }
+          .ss-expandall ha-icon { --mdc-icon-size:18px; }
           .ss-spark-wrap { margin:10px 0 2px; }
           .ss-spark-cap { color:var(--secondary-text-color); font-size:.72rem; margin-bottom:2px; }
           .ss-spark { width:100%; height:40px; display:block; }
@@ -869,4 +872,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.9 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.10 ", "background:#0288d1;color:#fff", "");
