@@ -500,12 +500,21 @@ class SensorSentinelCard extends HTMLElement {
         <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">🚫</button>
         <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant"><ha-icon icon="mdi:power-off" class="ss-mdi"></ha-icon></button>`;
     }
+    // Render the clickable area as a real <a> to the device page when the
+    // entity has a device, so right-click / cmd-click / middle-click can open
+    // it in a new tab. Plain left-clicks are intercepted for in-app nav.
+    const deviceId = this._hass?.entities?.[eid]?.device_id;
+    const href = deviceId ? `/config/devices/device/${deviceId}` : null;
+    const mainOpen = href
+      ? `<a class="ss-row-main" href="${href}" data-info="${eid}" title="Open device page for ${eid}">`
+      : `<div class="ss-row-main" data-info="${eid}" title="Open ${eid}">`;
+    const mainClose = href ? "</a>" : "</div>";
     return `
       <div class="ss-row">
-        <div class="ss-row-main" data-info="${eid}" title="Open device page for ${eid}">
+        ${mainOpen}
           <div class="ss-name">${inc.name || eid}${badges}</div>
           <div class="ss-meta">${inc.area || "—"} · ${inc.state} · ${this._duration(inc.since)}</div>
-        </div>
+        ${mainClose}
         <div class="ss-actions">${actions}</div>
       </div>`;
   }
@@ -540,7 +549,13 @@ class SensorSentinelCard extends HTMLElement {
     );
 
     this.querySelectorAll(".ss-row-main[data-info]").forEach((el) =>
-      el.addEventListener("click", () => this._openEntity(el.getAttribute("data-info")))
+      el.addEventListener("click", (e) => {
+        // Let modifier / non-left clicks fall through so the browser can open
+        // the link in a new tab; intercept plain left-clicks for in-app nav.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        this._openEntity(el.getAttribute("data-info"));
+      })
     );
 
     this.querySelectorAll("button[data-act]").forEach((btn) =>
@@ -630,7 +645,7 @@ class SensorSentinelCard extends HTMLElement {
             cursor:pointer; font-size:1rem; padding:2px 4px; border-radius:6px; }
           .ss-group-actions button:hover, .ss-actions button:hover { background:var(--secondary-background-color); }
           .ss-row { display:flex; align-items:center; gap:8px; padding:6px 0 6px 18px; }
-          .ss-row-main { flex:1; min-width:0; cursor:pointer; }
+          .ss-row-main { flex:1; min-width:0; cursor:pointer; text-decoration:none; color:inherit; }
           .ss-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
           .ss-meta { color:var(--secondary-text-color); font-size:.78rem; }
           .ss-badge { font-size:.7rem; border:1px solid; border-radius:6px; padding:0 4px; }
@@ -694,4 +709,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.2 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.3 ", "background:#0288d1;color:#fff", "");
