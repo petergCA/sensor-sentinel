@@ -258,18 +258,35 @@ class SensorSentinelCard extends HTMLElement {
     }
   }
 
-  _bulkSnooze(entityIds, minutes) {
-    for (const eid of entityIds) {
-      this._hass.callService("sensor_sentinel", "snooze", { entity_id: eid, minutes });
-    }
-    this._toast(`Snoozed ${entityIds.length} entities for ${minutes}m`);
+  _idsForGroup(key) {
+    const st = this._stateObj();
+    const all =
+      this._full && Array.isArray(this._incidents)
+        ? this._incidents
+        : st?.attributes?.entities || [];
+    return all
+      .filter((inc) => this._groupKey(inc) === key && this._matchesFilter(inc))
+      .map((inc) => inc.entity_id);
   }
 
-  _bulkExclude(entityIds) {
-    for (const eid of entityIds) {
+  _bulkSnooze(key, minutes) {
+    this._modal = null;
+    const ids = this._idsForGroup(key);
+    for (const eid of ids) {
+      this._hass.callService("sensor_sentinel", "snooze", { entity_id: eid, minutes });
+    }
+    this._toast(`Snoozed ${ids.length} entities for ${minutes} min`);
+    this._render();
+  }
+
+  _bulkExclude(key) {
+    this._modal = null;
+    const ids = this._idsForGroup(key);
+    for (const eid of ids) {
       this._hass.callService("sensor_sentinel", "exclude", { entity_id: eid });
     }
-    this._toast(`Excluded ${entityIds.length} entities — undo in Configure`);
+    this._toast(`Excluded ${ids.length} entities — undo in Configure`);
+    this._render();
   }
 
   _openEntity(entityId) {
@@ -629,17 +646,17 @@ class SensorSentinelCard extends HTMLElement {
     this.querySelectorAll("button[data-gact]").forEach((btn) =>
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
+        e.preventDefault();
         const key = decodeURIComponent(btn.getAttribute("data-gkey"));
-        const st = this._stateObj();
-        const all = this._full && Array.isArray(this._incidents)
-          ? this._incidents
-          : (st?.attributes?.entities || []);
-        const ids = all
-          .filter((inc) => this._groupKey(inc) === key && this._matchesFilter(inc))
-          .map((inc) => inc.entity_id);
-        if (!ids.length) return;
-        if (btn.getAttribute("data-gact") === "snooze") this._bulkSnooze(ids, 60);
-        else this._bulkExclude(ids);
+        const count = this._idsForGroup(key).length;
+        if (!count) return;
+        const act = btn.getAttribute("data-gact");
+        this._openModal({
+          kind: act === "snooze" ? "gsnooze" : "gexclude",
+          key,
+          label: this._groupLabel(key),
+          count,
+        });
       })
     );
   }
@@ -680,6 +697,22 @@ class SensorSentinelCard extends HTMLElement {
       actionsHtml =
         `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
         `<button class="ss-mbtn ss-mdanger" data-mact="disable">Disable</button>`;
+    } else if (m.kind === "gexclude") {
+      title = `Exclude all in ${m.label}?`;
+      bodyHtml = `<div class="ss-msub">Adds Sentinel exclusion rules for all <b>${m.count}</b> currently-listed ${m.count === 1 ? "entity" : "entities"} in this group. They stay fully active in Home Assistant — undo in the integration's <b>Configure</b> dialog.</div>`;
+      actionsHtml =
+        `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
+        `<button class="ss-mbtn ss-mprimary" data-mact="gexclude">Exclude ${m.count}</button>`;
+    } else if (m.kind === "gsnooze") {
+      title = `Snooze all in ${m.label}`;
+      bodyHtml =
+        `<div class="ss-msub">Mute all <b>${m.count}</b> currently-listed ${m.count === 1 ? "entity" : "entities"} in this group for…</div>` +
+        `<div class="ss-mgrid">` +
+        SNOOZE_PRESETS.map(
+          ([lbl, mins]) => `<button class="ss-mbtn ss-mgridbtn" data-mact="gsnooze" data-min="${mins}">${lbl}</button>`
+        ).join("") +
+        `</div>`;
+      actionsHtml = `<button class="ss-mbtn" data-mact="close">Cancel</button>`;
     }
     return `
       <div class="ss-modal-overlay">
@@ -706,6 +739,9 @@ class SensorSentinelCard extends HTMLElement {
           this._snoozeMinutes(this._modal.eid, Number(el.getAttribute("data-min")));
         else if (act === "exclude") this._doExclude(this._modal.eid);
         else if (act === "disable") this._disableEntity(this._modal.eid);
+        else if (act === "gexclude") this._bulkExclude(this._modal.key);
+        else if (act === "gsnooze")
+          this._bulkSnooze(this._modal.key, Number(el.getAttribute("data-min")));
       })
     );
   }
@@ -833,4 +869,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.8 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.9 ", "background:#0288d1;color:#fff", "");
