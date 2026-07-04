@@ -85,6 +85,7 @@ class SensorSentinelCard extends HTMLElement {
     this._collapsed = this._loadCollapsed();
     this._filter = this._filter || "";
     this._snoozeMenuFor = null;
+    this._disableConfirmFor = null;
     // Invalidate cached history so a changed window refetches promptly.
     this._historyFetchedAt = 0;
     this._history = null;
@@ -176,6 +177,21 @@ class SensorSentinelCard extends HTMLElement {
     // Reversible (removable in Configure), so no blocking confirm dialog.
     this._hass.callService("sensor_sentinel", "exclude", { entity_id: entityId });
     this._toast(`Excluded ${entityId} — undo in the integration's Configure dialog`);
+  }
+
+  async _disableEntity(entityId) {
+    this._disableConfirmFor = null;
+    try {
+      await this._hass.callWS({
+        type: "config/entity_registry/update",
+        entity_id: entityId,
+        disabled_by: "user",
+      });
+      this._toast(`Disabled ${entityId} — re-enable in Settings → Entities`);
+    } catch (e) {
+      this._toast(`Could not disable ${entityId} (admin required?): ${e}`);
+    }
+    this._render();
   }
 
   async _why(entityId) {
@@ -471,12 +487,18 @@ class SensorSentinelCard extends HTMLElement {
         SNOOZE_PRESETS.map(
           ([lbl, m]) => `<button class="ss-preset" data-snoozem="${m}" data-eid="${eid}">${lbl}</button>`
         ).join("") + `<button data-act="snooze-cancel" data-eid="${eid}" title="Cancel">×</button>`;
+    } else if (this._disableConfirmFor === eid) {
+      actions = `
+        <span class="ss-confirm">Disable in HA?</span>
+        <button class="ss-preset ss-danger" data-act="disable-confirm" data-eid="${eid}">Disable</button>
+        <button data-act="disable-cancel" data-eid="${eid}" title="Cancel">×</button>`;
     } else {
       actions = `
         ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
         <button data-act="why" data-eid="${eid}" title="Why?">?</button>
         <button data-act="snooze" data-eid="${eid}" title="Snooze">💤</button>
-        <button data-act="exclude" data-eid="${eid}" title="Exclude">🚫</button>`;
+        <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">🚫</button>
+        <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant"><ha-icon icon="mdi:power-off" class="ss-mdi"></ha-icon></button>`;
     }
     return `
       <div class="ss-row">
@@ -535,6 +557,13 @@ class SensorSentinelCard extends HTMLElement {
           this._render();
         } else if (act === "exclude") this._exclude(eid);
         else if (act === "ping") this._ping(eid);
+        else if (act === "disable") {
+          this._disableConfirmFor = eid;
+          this._render();
+        } else if (act === "disable-cancel") {
+          this._disableConfirmFor = null;
+          this._render();
+        } else if (act === "disable-confirm") this._disableEntity(eid);
       })
     );
 
@@ -609,6 +638,10 @@ class SensorSentinelCard extends HTMLElement {
           .ss-stale { color:var(--secondary-text-color); }
           .ss-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
           .ss-preset { font-size:.78rem !important; border:1px solid var(--divider-color) !important; }
+          .ss-danger { color:var(--error-color,#db4437) !important; }
+          .ss-confirm { font-size:.78rem; color:var(--secondary-text-color); }
+          .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
+            color:var(--secondary-text-color); }
           .ss-empty { padding:14px 2px; color:var(--secondary-text-color); }
           .ss-note { color:var(--secondary-text-color); font-size:.75rem; margin-top:8px; font-style:italic; }
         </style>
@@ -661,4 +694,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.1 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.2 ", "background:#0288d1;color:#fff", "");
