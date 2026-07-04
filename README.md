@@ -99,10 +99,11 @@ Everything is in the integration's **Configure** dialog:
 
 ## Status
 
-v0.5 — MVP plus the full-list card with a visual editor, integration display names, count/name sorting, collapse-by-default, a Z-Wave ping action, and an optional trend sparkline (detection, exclusions UI, notifications, entities/events). Auto-recovery is a planned later phase and is **not**
-names, count/name sorting, collapse-by-default, and a Z-Wave ping action
-(detection, exclusions UI, notifications, entities/events). Auto-recovery is a
-planned later phase and is **not** included.
+v0.5 — MVP plus the full-list card with a visual editor, integration display
+names, count/name sorting, collapse-by-default, a Z-Wave ping action, and an
+optional trend sparkline (detection, exclusions UI, notifications,
+entities/events). Auto-recovery is a planned later phase and is **not**
+included.
 
 ## License
 
