@@ -470,6 +470,12 @@ class SensorSentinelCard extends HTMLElement {
     }
 
     const filterVal = (this._filter || "").replace(/"/g, "&quot;");
+    const anyExpanded = orderedKeys.some((k) => !this._isCollapsed(k));
+    const toggleAllBtn = orderedKeys.length
+      ? `<button class="ss-expandall" data-toggleall title="${anyExpanded ? "Collapse all" : "Expand all"}">
+           <ha-icon icon="${anyExpanded ? "mdi:unfold-less-horizontal" : "mdi:unfold-more-horizontal"}"></ha-icon>
+         </button>`
+      : "";
     this.innerHTML = this._wrap(`
       <div class="ss-head">
         <div class="ss-count ${count ? "bad" : "ok"}">${count}</div>
@@ -477,6 +483,7 @@ class SensorSentinelCard extends HTMLElement {
           <div class="ss-title">Sensor Sentinel</div>
           <div class="ss-sub">${count ? "entities down and/or unavailable" : "all clear"}</div>
         </div>
+        ${toggleAllBtn}
       </div>
       ${this._sparklineSVG()}
       ${count ? `<input class="ss-search" type="search" placeholder="Filter by name, area, integration…" value="${filterVal}" />` : ""}
@@ -485,9 +492,36 @@ class SensorSentinelCard extends HTMLElement {
     this._bind();
   }
 
+  _isCollapsed(key) {
+    return key in this._collapsed ? this._collapsed[key] : !!this._config.collapse_by_default;
+  }
+
+  _currentGroupKeys() {
+    const st = this._stateObj();
+    const all =
+      this._full && Array.isArray(this._incidents)
+        ? this._incidents
+        : st?.attributes?.entities || [];
+    const keys = new Set();
+    for (const inc of all) {
+      if (this._matchesFilter(inc)) keys.add(this._groupKey(inc));
+    }
+    return [...keys];
+  }
+
+  _toggleAll() {
+    const keys = this._currentGroupKeys();
+    // If anything is expanded, collapse everything; otherwise expand everything.
+    const collapse = keys.some((k) => !this._isCollapsed(k));
+    keys.forEach((k) => {
+      this._collapsed[k] = collapse;
+    });
+    this._saveCollapsed();
+    this._render();
+  }
+
   _renderGroup(key, rows) {
-    const collapsed =
-      key in this._collapsed ? this._collapsed[key] : !!this._config.collapse_by_default;
+    const collapsed = this._isCollapsed(key);
     const items = collapsed ? "" : rows.map((inc) => this._renderRow(inc)).join("");
     return `
       <div class="ss-group">
@@ -557,13 +591,14 @@ class SensorSentinelCard extends HTMLElement {
     this.querySelectorAll("[data-toggle]").forEach((el) =>
       el.addEventListener("click", () => {
         const k = decodeURIComponent(el.getAttribute("data-toggle"));
-        const current =
-          k in this._collapsed ? this._collapsed[k] : !!this._config.collapse_by_default;
-        this._collapsed[k] = !current;
+        this._collapsed[k] = !this._isCollapsed(k);
         this._saveCollapsed();
         this._render();
       })
     );
+
+    const toggleAll = this.querySelector("[data-toggleall]");
+    if (toggleAll) toggleAll.addEventListener("click", () => this._toggleAll());
 
     this.querySelectorAll(".ss-row-main[data-info]").forEach((el) =>
       el.addEventListener("click", (e) => {
@@ -687,6 +722,10 @@ class SensorSentinelCard extends HTMLElement {
           .ss-count.ok { color:var(--success-color,#43a047); }
           .ss-title { font-weight:600; }
           .ss-sub { color:var(--secondary-text-color); font-size:.85rem; }
+          .ss-expandall { margin-left:auto; align-self:center; background:none; border:none;
+            cursor:pointer; padding:6px; border-radius:8px; color:var(--secondary-text-color); }
+          .ss-expandall:hover { background:var(--secondary-background-color); }
+          .ss-expandall ha-icon { --mdc-icon-size:24px; display:block; }
           .ss-spark-wrap { margin:10px 0 2px; }
           .ss-spark-cap { color:var(--secondary-text-color); font-size:.72rem; margin-bottom:2px; }
           .ss-spark { width:100%; height:40px; display:block; }
@@ -794,4 +833,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.6 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.7 ", "background:#0288d1;color:#fff", "");
