@@ -11,6 +11,7 @@ const DEFAULT_ENTITY = "sensor.sentinel_unavailable_count";
 
 const CONFIG_DEFAULTS = {
   entity: DEFAULT_ENTITY,
+  sort: "count",
   collapse_by_default: false,
   zwave_ping: true,
 };
@@ -18,12 +19,25 @@ const CONFIG_DEFAULTS = {
 // Schema for the visual (ha-form) editor.
 const EDITOR_SCHEMA = [
   { name: "entity", required: true, selector: { entity: { domain: "sensor" } } },
+  {
+    name: "sort",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "count", label: "By count (most down first)" },
+          { value: "name", label: "Alphabetical" },
+        ],
+      },
+    },
+  },
   { name: "collapse_by_default", selector: { boolean: {} } },
   { name: "zwave_ping", selector: { boolean: {} } },
 ];
 
 const EDITOR_LABELS = {
   entity: "Count entity",
+  sort: "Sort integrations",
   collapse_by_default: "Collapse integrations by default",
   zwave_ping: "Show Z-Wave ping button",
 };
@@ -125,6 +139,16 @@ class SensorSentinelCard extends HTMLElement {
     }
   }
 
+  _integrationName(id) {
+    // Resolve a platform/domain id (e.g. "zwave_js") to its display name
+    // (e.g. "Z-Wave JS") via the frontend's component translations, falling
+    // back to a prettified id when no translation is loaded.
+    if (!id || id === "unknown") return "Unknown";
+    const loc = this._hass?.localize?.(`component.${id}.title`);
+    if (loc) return loc;
+    return id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
   _duration(sinceIso) {
     const secs = Math.max(0, (Date.now() - new Date(sinceIso).getTime()) / 1000);
     if (secs < 90) return `${Math.round(secs)}s`;
@@ -160,15 +184,24 @@ class SensorSentinelCard extends HTMLElement {
     const chips = Object.entries(byIntegration)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
-      .map(([k, v]) => `<span class="ss-chip">${k}: ${v}</span>`)
+      .map(([k, v]) => `<span class="ss-chip">${this._integrationName(k)}: ${v}</span>`)
       .join("");
+
+    // Order the groups: by number of down entities (most first), or by name.
+    const sortMode = this._config.sort || "count";
+    const orderedKeys = Object.keys(groups).sort((a, b) => {
+      if (sortMode === "count") {
+        const diff = groups[b].length - groups[a].length;
+        if (diff) return diff;
+      }
+      return this._integrationName(a).localeCompare(this._integrationName(b));
+    });
 
     let body;
     if (count === 0) {
       body = `<div class="ss-empty">✅ Everything's up — nothing down right now.</div>`;
     } else {
-      body = Object.keys(groups)
-        .sort()
+      body = orderedKeys
         .map((integration) => this._renderGroup(integration, groups[integration]))
         .join("");
       if (!usingFull && attrs.truncated) {
@@ -229,7 +262,7 @@ class SensorSentinelCard extends HTMLElement {
       <div class="ss-group">
         <div class="ss-group-head" data-toggle="${integration}">
           <span class="ss-caret">${collapsed ? "▸" : "▾"}</span>
-          <span>${integration}</span>
+          <span>${this._integrationName(integration)}</span>
           <span class="ss-group-count">${rows.length}</span>
         </div>
         ${items}
@@ -373,4 +406,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.3.0 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.4.0 ", "background:#0288d1;color:#fff", "");
