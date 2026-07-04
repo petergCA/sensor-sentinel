@@ -23,6 +23,16 @@ services.
   fleet-wide scan on any event; attribute payloads are hard-capped.
 - **Grace window** — a per-entity debounce (default 60s) suppresses flaps: an
   entity must stay bad past the window before it becomes an incident.
+- **Startup warmup** — entities already bad at boot are held for a warmup window
+  (default 120s) before counting, so transient boot-time unknowns never spike
+  the count.
+- **Durable state** — incident start-times and snoozes persist across restarts
+  (via the config Store), so durations and the trend survive a reboot.
+- **Opt-in self-healing** — off by default; when enabled, tries to recover a
+  stuck entity (Z-Wave ping, or reload the owning integration) with attempt
+  caps and cooldowns.
+- **Re-alert & stale-retire** — optionally re-notify on prolonged downtime, and
+  auto-drop long-dead incidents (retired devices) from the count.
 - **Rules over lists** — exclude by **domain**, **integration**, **entity_id
   glob**, or **explicit entity**, all from the UI. No hand-edited YAML.
 - **Dry-run preview** — before saving a rule change, see exactly which
@@ -33,11 +43,13 @@ services.
   editor** (no YAML needed). Shows the **full** live incident list grouped by
   integration — using each integration's **display name** (e.g. "Z-Wave JS", not
   `zwave_js`) — with one-click **snooze / exclude / why?** actions, plus a
-  **ping** button on Z-Wave rows (`zwave_js.ping`) to wake a dead node. Options:
-  sort integrations by down-count or alphabetically, collapse groups by default
-  (off by default), toggle the Z-Wave ping button, and an optional **trend
-  sparkline** of the down-count over a configurable window (in hours, from
-  recorder history). The card pulls the
+  **ping** button on Z-Wave rows (`zwave_js.ping`) to wake a dead node. Click a
+  row to open the entity's more-info dialog; **search/filter** the list; group
+  by **integration or area**; snooze/exclude a whole group at once; snooze from
+  quick presets. Options: sort by down-count or alphabetically, collapse groups
+  by default (off by default), toggle the Z-Wave ping button, and an optional
+  **trend sparkline** of the down-count over a configurable window (in hours,
+  from recorder history). Collapse state is remembered. The card pulls the
   complete list on demand via a `sensor_sentinel/list` websocket command, so the
   count sensor's attribute payload stays capped no matter how many entities are
   down.
@@ -48,8 +60,10 @@ services.
 
 | Entity | Purpose |
 | --- | --- |
-| `sensor.sentinel_unavailable_count` | Live down-count; capped rollup attributes (`by_integration`, `by_area`, 25-row sample). |
+| `sensor.sentinel_unavailable_count` | Live down-count; capped rollup attributes (`by_integration`, `by_area`, 25-row sample, `recovered_today`, `longest_down`, `stale_count`). |
 | `binary_sensor.sentinel_problem` | `device_class: problem`; on when anything is down. |
+| `sensor.sentinel_recovered_today` | Count of entities recovered so far today (resets at local midnight). |
+| `sensor.sentinel_longest_down` | Name of the entity down the longest; `entity_id`/`since` in attributes. |
 
 ## Events
 
@@ -99,11 +113,11 @@ Everything is in the integration's **Configure** dialog:
 
 ## Status
 
-v0.5 — MVP plus the full-list card with a visual editor, integration display
-names, count/name sorting, collapse-by-default, a Z-Wave ping action, and an
-optional trend sparkline (detection, exclusions UI, notifications,
-entities/events). Auto-recovery is a planned later phase and is **not**
-included.
+v0.6 — adds durable state (persisted since + snoozes), a startup warmup window,
+insight sensors (recovered-today, longest-down), optional re-alert /
+stale-retire / auto-recovery (all off by default), and a much richer card
+(search, group-by-area, bulk group actions, more-info, snooze presets,
+remembered collapse). Auto-recovery is **opt-in** and conservative.
 
 ## License
 

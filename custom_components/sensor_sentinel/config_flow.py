@@ -20,6 +20,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er, selector
 
 from .const import (
+    CONF_AUTO_RECOVERY,
     CONF_BAD_STATES,
     CONF_EXCLUDED_DOMAINS,
     CONF_EXCLUDED_ENTITIES,
@@ -29,11 +30,20 @@ from .const import (
     CONF_INTEGRATION_THRESHOLD,
     CONF_NOTIFY_TARGETS,
     CONF_PERSISTENT_NOTIFICATION,
+    CONF_RECOVERY_DELAY,
+    CONF_REALERT_HOURS,
+    CONF_STALE_DAYS,
+    CONF_STARTUP_GRACE,
     DATA_MANAGER,
+    DEFAULT_AUTO_RECOVERY,
     DEFAULT_BAD_STATES,
     DEFAULT_EXCLUDED_DOMAINS,
     DEFAULT_GRACE_PERIOD,
     DEFAULT_INTEGRATION_THRESHOLD,
+    DEFAULT_RECOVERY_DELAY,
+    DEFAULT_REALERT_HOURS,
+    DEFAULT_STALE_DAYS,
+    DEFAULT_STARTUP_GRACE,
     DOMAIN,
     NAME,
 )
@@ -67,9 +77,14 @@ _DEFAULTS: dict[str, Any] = {
     CONF_EXCLUDED_PATTERNS: [],
     CONF_EXCLUDED_ENTITIES: [],
     CONF_GRACE_PERIOD: DEFAULT_GRACE_PERIOD,
+    CONF_STARTUP_GRACE: DEFAULT_STARTUP_GRACE,
     CONF_INTEGRATION_THRESHOLD: DEFAULT_INTEGRATION_THRESHOLD,
     CONF_NOTIFY_TARGETS: [],
     CONF_PERSISTENT_NOTIFICATION: True,
+    CONF_REALERT_HOURS: DEFAULT_REALERT_HOURS,
+    CONF_STALE_DAYS: DEFAULT_STALE_DAYS,
+    CONF_AUTO_RECOVERY: DEFAULT_AUTO_RECOVERY,
+    CONF_RECOVERY_DELAY: DEFAULT_RECOVERY_DELAY,
 }
 
 
@@ -165,11 +180,47 @@ class SentinelOptionsFlow(OptionsFlow):
                     )
                 ),
                 vol.Required(
+                    CONF_STARTUP_GRACE, default=self._current(CONF_STARTUP_GRACE)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=1800, step=10, unit_of_measurement="s",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
                     CONF_INTEGRATION_THRESHOLD,
                     default=self._current(CONF_INTEGRATION_THRESHOLD),
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=0, max=100, step=1, mode=selector.NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Required(
+                    CONF_REALERT_HOURS, default=self._current(CONF_REALERT_HOURS)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=168, step=1, unit_of_measurement="h",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_STALE_DAYS, default=self._current(CONF_STALE_DAYS)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=365, step=1, unit_of_measurement="d",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_AUTO_RECOVERY,
+                    default=self._current(CONF_AUTO_RECOVERY),
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_RECOVERY_DELAY, default=self._current(CONF_RECOVERY_DELAY)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=30, max=3600, step=30, unit_of_measurement="s",
+                        mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
                 vol.Optional(

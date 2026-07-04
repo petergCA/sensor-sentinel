@@ -86,6 +86,20 @@ class ExclusionEngine:
         for eid in expired:
             del self._snoozed[eid]
 
+    def snapshot_snoozes(self) -> dict[str, float]:
+        """Export the active snooze map (for persistence)."""
+        return dict(self._snoozed)
+
+    def load_snoozes(self, snoozes: dict, now_ts: float) -> None:
+        """Restore snoozes from persistence, dropping any already expired."""
+        for eid, until in (snoozes or {}).items():
+            try:
+                until_f = float(until)
+            except (TypeError, ValueError):
+                continue
+            if until_f > now_ts:
+                self._snoozed[eid] = until_f
+
     # -- Evaluation ---------------------------------------------------------
 
     def match(self, entity_id: str, now_ts: float | None = None) -> ExclusionMatch | None:

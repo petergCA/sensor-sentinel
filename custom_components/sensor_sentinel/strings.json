@@ -22,7 +22,12 @@
           "excluded_patterns": "Excluded entity_id globs (e.g. *_firmware, roborock_*)",
           "excluded_entities": "Excluded entities",
           "grace_period": "Grace window (seconds a flap is ignored)",
+          "startup_grace": "Startup warmup (seconds)",
           "integration_threshold": "Roll up as one incident at N entities per integration",
+          "realert_hours": "Re-alert if still down after (hours)",
+          "stale_days": "Auto-retire incidents down longer than (days)",
+          "auto_recovery": "Attempt automatic recovery",
+          "recovery_delay": "Wait before recovery attempt (seconds)",
           "notify_targets": "Mobile notify services (e.g. mobile_app_iphone)",
           "persistent_notification": "Create persistent notifications"
         },
@@ -32,7 +37,12 @@
           "excluded_integrations": "Whole integrations to never report. Every entity from a selected integration is fully excluded. The list is the integrations currently in your system; you can also type one that isn't loaded yet.",
           "excluded_patterns": "Glob patterns matched against entity_id, e.g. *_firmware or roborock_*.",
           "grace_period": "How long an entity must stay bad before it's reported, so brief flaps don't page you.",
+          "startup_grace": "At startup, hold entities that are already bad for this long before counting them, so transient boot-time unknowns (MQTT, Z-Wave interview) don't spike the count. Anything that recovers inside the window is never counted.",
           "integration_threshold": "When at least this many entities from one integration are down at once, report them as a single rolled-up incident. 0 disables the roll-up.",
+          "realert_hours": "Send a reminder notification when an entity is still down after this many hours. 0 disables re-alerts.",
+          "stale_days": "Incidents down longer than this are treated as retired devices: dropped from the count and notifications, but still shown (flagged) in the card. 0 disables.",
+          "auto_recovery": "When on, try to heal an entity that stays down: ping Z-Wave nodes, or reload the owning integration — with attempt caps and cooldowns. Off by default.",
+          "recovery_delay": "How long an entity must be down before the first recovery attempt (only used when automatic recovery is on).",
           "notify_targets": "notify.* service names without the notify. prefix, e.g. mobile_app_your_phone."
         }
       },

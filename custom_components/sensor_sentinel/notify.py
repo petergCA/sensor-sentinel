@@ -25,6 +25,7 @@ from .const import (
     DOMAIN,
     EVENT_ENTITY_DOWN,
     EVENT_ENTITY_RECOVERED,
+    EVENT_ENTITY_STILL_DOWN,
     NAME,
 )
 
@@ -43,6 +44,7 @@ class SentinelNotifier:
         self._unsub: list[callable] = []
         self._down_batch: list[dict] = []
         self._recovered_batch: list[dict] = []
+        self._still_down_batch: list[dict] = []
         self._flush_scheduled = False
         self._load_options()
 
@@ -64,6 +66,9 @@ class SentinelNotifier:
         self._unsub.append(
             self.hass.bus.async_listen(EVENT_ENTITY_RECOVERED, self._on_recovered)
         )
+        self._unsub.append(
+            self.hass.bus.async_listen(EVENT_ENTITY_STILL_DOWN, self._on_still_down)
+        )
 
     def async_stop(self) -> None:
         for unsub in self._unsub:
@@ -80,6 +85,11 @@ class SentinelNotifier:
         self._recovered_batch.append(dict(event.data))
         self._schedule_flush()
 
+    @callback
+    def _on_still_down(self, event: Event) -> None:
+        self._still_down_batch.append(dict(event.data))
+        self._schedule_flush()
+
     def _schedule_flush(self) -> None:
         if self._flush_scheduled:
             return
@@ -91,13 +101,17 @@ class SentinelNotifier:
         self._flush_scheduled = False
         down, self._down_batch = self._down_batch, []
         recovered, self._recovered_batch = self._recovered_batch, []
-        if not down and not recovered:
+        still_down, self._still_down_batch = self._still_down_batch, []
+        if not down and not recovered and not still_down:
             return
 
-        message = self._compose(down, recovered)
-        title = f"{NAME}: {len(down)} down"
-        if recovered and not down:
+        message = self._compose(down, recovered, still_down)
+        if down:
+            title = f"{NAME}: {len(down)} down"
+        elif recovered:
             title = f"{NAME}: {len(recovered)} recovered"
+        else:
+            title = f"{NAME}: {len(still_down)} still down"
 
         if self._persistent:
             pn_create(
@@ -113,7 +127,9 @@ class SentinelNotifier:
                 )
             )
 
-    def _compose(self, down: list[dict], recovered: list[dict]) -> str:
+    def _compose(
+        self, down: list[dict], recovered: list[dict], still_down: list[dict]
+    ) -> str:
         lines: list[str] = []
         if down:
             # Roll up by integration; large groups collapse to one line.
@@ -131,6 +147,13 @@ class SentinelNotifier:
                     for inc in incidents:
                         flap = " (flapping)" if inc.get("flapping") else ""
                         lines.append(f"- {inc.get('name', inc['entity_id'])}{flap}")
+        if still_down:
+            lines.append("")
+            lines.append("**Still down**")
+            for inc in still_down:
+                hrs = int(inc.get("down_seconds", 0) // 3600)
+                suffix = f" ({hrs}h)" if hrs else ""
+                lines.append(f"- {inc.get('name', inc['entity_id'])}{suffix}")
         if recovered:
             lines.append("")
             lines.append("**Recovered**")

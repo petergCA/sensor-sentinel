@@ -1,9 +1,10 @@
-"""Count sensor for Sensor Sentinel."""
+"""Sensors for Sensor Sentinel."""
 
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -17,7 +18,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = hass.data[DOMAIN][entry.entry_id][DATA_MANAGER]
-    async_add_entities([SentinelCountSensor(coordinator)])
+    async_add_entities(
+        [
+            SentinelCountSensor(coordinator),
+            SentinelRecoveredTodaySensor(coordinator),
+            SentinelLongestDownSensor(coordinator),
+        ]
+    )
 
 
 class SentinelCountSensor(SentinelEntity, SensorEntity):
@@ -48,7 +55,7 @@ class SentinelCountSensor(SentinelEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         data = self.coordinator.data
-        incidents = list(data.incidents.values())
+        incidents = [inc for inc in data.incidents.values() if not inc.stale]
         sample = [
             {
                 "entity_id": inc.entity_id,
@@ -66,4 +73,49 @@ class SentinelCountSensor(SentinelEntity, SensorEntity):
             "by_area": data.by_area,
             "entities": sample,
             "truncated": len(incidents) > MAX_ATTR_ENTITIES,
+            "recovered_today": data.recovered_today,
+            "longest_down": data.longest_down,
+            "stale_count": data.stale_count,
         }
+
+
+class SentinelRecoveredTodaySensor(SentinelEntity, SensorEntity):
+    """Count of entities that recovered so far today (resets at local midnight)."""
+
+    _attr_name = "Recovered today"
+    _attr_icon = "mdi:backup-restore"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "entities"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_recovered_today"
+        self.entity_id = "sensor.sentinel_recovered_today"
+
+    @property
+    def native_value(self) -> int:
+        return self.coordinator.data.recovered_today
+
+
+class SentinelLongestDownSensor(SentinelEntity, SensorEntity):
+    """The entity that has been down the longest (name; details in attributes)."""
+
+    _attr_name = "Longest down"
+    _attr_icon = "mdi:timer-alert-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_longest_down"
+        self.entity_id = "sensor.sentinel_longest_down"
+
+    @property
+    def native_value(self) -> str:
+        longest = self.coordinator.data.longest_down
+        # Cap to HA's 255-char state limit.
+        return (longest["name"] if longest else "none")[:255]
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return self.coordinator.data.longest_down or {}

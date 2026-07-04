@@ -12,6 +12,13 @@ Lifecycle of an entity:
     pending ──still bad after grace──▶ down   (fire entity_down, notify)
     pending ──good before grace──▶ good       (flap suppressed, no incident)
     down ──good──▶ good                        (fire entity_recovered, notify)
+
+Startup is softened by a *warmup window* (``startup_grace``): entities already
+bad at boot are only counted once they survive the window, so transient
+boot-time unknowns (MQTT retained, Z-Wave interview) never spike the count.
+A periodic housekeeping tick drives the opt-in re-alert / stale-retire /
+auto-recovery features. Incident ``since`` timestamps and snoozes survive a
+restart via the config Store.
 """
 
 from __future__ import annotations
@@ -19,27 +26,45 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import timedelta
 
-from homeassistant.const import EVENT_STATE_CHANGED
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_STATE_CHANGED
+from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     entity_registry as er,
 )
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_AUTO_RECOVERY,
     CONF_BAD_STATES,
     CONF_GRACE_PERIOD,
+    CONF_RECOVERY_DELAY,
+    CONF_REALERT_HOURS,
+    CONF_STALE_DAYS,
+    CONF_STARTUP_GRACE,
+    DEFAULT_AUTO_RECOVERY,
     DEFAULT_BAD_STATES,
     DEFAULT_GRACE_PERIOD,
+    DEFAULT_RECOVERY_DELAY,
+    DEFAULT_REALERT_HOURS,
+    DEFAULT_STALE_DAYS,
+    DEFAULT_STARTUP_GRACE,
     DOMAIN,
     EVENT_ENTITY_DOWN,
     EVENT_ENTITY_RECOVERED,
+    EVENT_ENTITY_STILL_DOWN,
+    HOUSEKEEPING_INTERVAL,
+    RECOVERY_COOLDOWN,
+    RECOVERY_MAX_ATTEMPTS,
     STATE_WRITE_DEBOUNCE,
+    STORAGE_KEY,
+    STORAGE_VERSION,
 )
 from .exclusions import ExclusionEngine
 
@@ -47,6 +72,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # An entity that recovers and drops again within this window is "flapping".
 _FLAP_WINDOW = 300.0
+# Debounce window for persisting state to the Store.
+_STORE_DEBOUNCE = 15
 
 
 @dataclass
@@ -61,6 +88,7 @@ class Incident:
     area: str | None
     since: str  # ISO8601 UTC
     flapping: bool = False
+    stale: bool = False
 
     def as_event_data(self) -> dict:
         return asdict(self)
@@ -74,6 +102,9 @@ class _Snapshot:
     incidents: dict[str, Incident] = field(default_factory=dict)
     by_integration: dict[str, int] = field(default_factory=dict)
     by_area: dict[str, int] = field(default_factory=dict)
+    recovered_today: int = 0
+    longest_down: dict | None = None
+    stale_count: int = 0
 
 
 class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
@@ -94,6 +125,15 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._platform_cache: dict[str, str | None] = {}
         self._write_scheduled = False
 
+        # Persistence + insight/housekeeping state.
+        self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._stored_since: dict[str, str] = {}
+        self._recovered_today = 0
+        self._recovered_date = dt_util.now().date().isoformat()
+        self._realerted_at: dict[str, float] = {}  # entity_id -> monotonic
+        self._recovery_attempts: dict[str, int] = {}
+        self._recovery_last: dict[str, float] = {}  # entity_id -> monotonic
+
         self.exclusions = ExclusionEngine(dict(entry.options), self._platform_of)
         self._load_tunables()
 
@@ -103,6 +143,17 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         opts = self.entry.options
         self._bad_states = frozenset(opts.get(CONF_BAD_STATES, DEFAULT_BAD_STATES))
         self._grace = float(opts.get(CONF_GRACE_PERIOD, DEFAULT_GRACE_PERIOD))
+        self._startup_grace = float(
+            opts.get(CONF_STARTUP_GRACE, DEFAULT_STARTUP_GRACE)
+        )
+        self._realert_hours = float(opts.get(CONF_REALERT_HOURS, DEFAULT_REALERT_HOURS))
+        self._stale_days = float(opts.get(CONF_STALE_DAYS, DEFAULT_STALE_DAYS))
+        self._auto_recovery = bool(
+            opts.get(CONF_AUTO_RECOVERY, DEFAULT_AUTO_RECOVERY)
+        )
+        self._recovery_delay = float(
+            opts.get(CONF_RECOVERY_DELAY, DEFAULT_RECOVERY_DELAY)
+        )
 
     async def async_options_updated(self) -> None:
         """Re-read options after the user edits the exclusions UI."""
@@ -155,10 +206,12 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         if state is None:
             return {"result": "missing"}
         if entity_id in self._down:
+            inc = self._down[entity_id]
             return {
                 "result": "down",
                 "state": state.state,
-                "since": self._down[entity_id].since,
+                "since": inc.since,
+                "stale": inc.stale,
             }
         if entity_id in self._pending:
             return {"result": "pending_grace", "state": state.state}
@@ -177,7 +230,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._platform_cache[entity_id] = platform
         return platform
 
-    def _enrich(self, entity_id: str, state) -> Incident:
+    def _enrich(self, entity_id: str, state, since: str | None = None) -> Incident:
         """Resolve name/integration/device/area. Runs per *incident*, not per event."""
         ent_reg = er.async_get(self.hass)
         dev_reg = dr.async_get(self.hass)
@@ -212,16 +265,17 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             integration=integration,
             device=device_name,
             area=area_name,
-            since=dt_util.utcnow().isoformat(),
+            since=since or dt_util.utcnow().isoformat(),
             flapping=flapping,
         )
 
     # -- Startup / teardown -------------------------------------------------
 
     async def async_start(self) -> None:
-        """Seed the set with one scan, then go fully event-driven."""
-        self._reseed(initial=True)
-        # Publish an initial snapshot synchronously so entities never read None.
+        """Load persisted state, then seed (after a warmup) and go event-driven."""
+        await self._load_store()
+
+        # Publish an empty snapshot so entities never read None before warmup.
         self.data = self._build_snapshot()
 
         self._unsub.append(
@@ -233,6 +287,36 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 er.EVENT_ENTITY_REGISTRY_UPDATED, self._invalidate_registry_cache
             )
         )
+        # Periodic housekeeping (re-alert / stale / auto-recovery).
+        self._unsub.append(
+            async_track_time_interval(
+                self.hass,
+                self._housekeeping,
+                timedelta(seconds=HOUSEKEEPING_INTERVAL),
+            )
+        )
+
+        # Warmup: hold off the initial seed so boot-time transients don't count.
+        if self._startup_grace <= 0:
+            self._reseed(initial=True)
+        elif self.hass.state == CoreState.running:
+            self._unsub.append(
+                async_call_later(self.hass, self._startup_grace, self._warmup_seed)
+            )
+        else:
+            # Wait for HA to finish starting, then run the warmup timer.
+            @callback
+            def _on_started(_event: Event) -> None:
+                self._unsub.append(
+                    async_call_later(self.hass, self._startup_grace, self._warmup_seed)
+                )
+
+            self._unsub.append(
+                self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED, _on_started
+                )
+            )
+
         self._schedule_write()
 
     async def async_shutdown(self) -> None:
@@ -242,16 +326,30 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         for unsub in self._unsub:
             unsub()
         self._unsub.clear()
+        # Best-effort final persist; never let a store error block unload.
+        try:
+            await self._store.async_save(self._store_data())
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Final store save failed", exc_info=True)
 
     @callback
     def _invalidate_registry_cache(self, _event: Event) -> None:
         self._platform_cache.clear()
+
+    @callback
+    def _warmup_seed(self, _now=None) -> None:
+        """Seed after the warmup window: whatever is still bad is genuinely down."""
+        self._reseed(initial=True)
+        self._schedule_write()
 
     def _reseed(self, initial: bool = False) -> None:
         """One-time full scan. The ONLY place we iterate all states."""
         for cancel in self._pending.values():
             cancel()
         self._pending.clear()
+        # Preserve known since-timestamps (current incidents, then persisted)
+        # so durations survive an options-change reseed and a restart.
+        known_since = {eid: inc.since for eid, inc in self._down.items()}
         self._down.clear()
 
         now = time.time()
@@ -260,9 +358,14 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 continue
             if self.exclusions.is_excluded(state.entity_id, now):
                 continue
-            # Entities already bad at startup are recorded as down immediately
+            # Entities still bad after warmup are recorded as down immediately
             # (no grace, no notification storm on boot).
-            self._down[state.entity_id] = self._enrich(state.entity_id, state)
+            since = known_since.get(state.entity_id) or self._stored_since.get(
+                state.entity_id
+            )
+            self._down[state.entity_id] = self._enrich(
+                state.entity_id, state, since=since
+            )
 
         if initial:
             _LOGGER.debug("Seeded with %d down entities", len(self._down))
@@ -325,6 +428,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     def _promote_recovery(self, entity_id: str) -> None:
         incident = self._down.pop(entity_id)
         self._recovered_at[entity_id] = time.monotonic()
+        self._realerted_at.pop(entity_id, None)
+        self._recovery_attempts.pop(entity_id, None)
+        self._recovery_last.pop(entity_id, None)
+        self._note_recovery()
         self.hass.bus.async_fire(
             EVENT_ENTITY_RECOVERED, {"entity_id": entity_id, "name": incident.name}
         )
@@ -338,10 +445,126 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         if self._down.pop(entity_id, None) is not None:
             self._schedule_write()
 
+    # -- Insight / persistence helpers --------------------------------------
+
+    def _note_recovery(self) -> None:
+        today = dt_util.now().date().isoformat()
+        if today != self._recovered_date:
+            self._recovered_date = today
+            self._recovered_today = 0
+        self._recovered_today += 1
+
+    async def _load_store(self) -> None:
+        try:
+            stored = await self._store.async_load()
+        except Exception:  # noqa: BLE001 - never let a bad store block setup
+            _LOGGER.warning("Could not load stored state; starting fresh", exc_info=True)
+            stored = None
+        if not stored:
+            return
+        self._stored_since = dict(stored.get("since", {}))
+        self.exclusions.load_snoozes(stored.get("snoozes", {}), time.time())
+        recovered = stored.get("recovered", {})
+        if recovered.get("date") == self._recovered_date:
+            self._recovered_today = int(recovered.get("count", 0))
+
+    def _store_data(self) -> dict:
+        return {
+            "since": {eid: inc.since for eid, inc in self._down.items()},
+            "snoozes": self.exclusions.snapshot_snoozes(),
+            "recovered": {
+                "date": self._recovered_date,
+                "count": self._recovered_today,
+            },
+        }
+
+    # -- Periodic housekeeping (re-alert / stale / recovery) ----------------
+
+    @callback
+    def _housekeeping(self, _now=None) -> None:
+        if not self._down:
+            return
+        now_iso_dt = dt_util.utcnow()
+        changed = False
+        for entity_id, inc in list(self._down.items()):
+            age = self._incident_age(inc, now_iso_dt)
+            if age is None:
+                continue
+
+            # Stale-retire: flag long-down incidents out of the count.
+            if self._stale_days > 0:
+                should_be_stale = age >= self._stale_days * 86400
+                if should_be_stale != inc.stale:
+                    inc.stale = should_be_stale
+                    changed = True
+            if inc.stale:
+                continue  # stale incidents skip re-alert + recovery
+
+            # Re-alert on prolonged downtime.
+            if self._realert_hours > 0 and age >= self._realert_hours * 3600:
+                last = self._realerted_at.get(entity_id, 0)
+                if time.monotonic() - last >= self._realert_hours * 3600:
+                    self._realerted_at[entity_id] = time.monotonic()
+                    self.hass.bus.async_fire(
+                        EVENT_ENTITY_STILL_DOWN,
+                        {**inc.as_event_data(), "down_seconds": int(age)},
+                    )
+
+            # Opt-in auto-recovery.
+            if self._auto_recovery and age >= self._recovery_delay:
+                self._maybe_recover(entity_id)
+
+        if changed:
+            self._schedule_write()
+
+    def _incident_age(self, inc: Incident, now_dt) -> float | None:
+        """Seconds an incident has been down, or None if the timestamp is bad."""
+        since = dt_util.parse_datetime(inc.since)
+        if since is None:
+            return None
+        return max(0.0, (now_dt - since).total_seconds())
+
+    def _maybe_recover(self, entity_id: str) -> None:
+        attempts = self._recovery_attempts.get(entity_id, 0)
+        if attempts >= RECOVERY_MAX_ATTEMPTS:
+            return
+        last = self._recovery_last.get(entity_id, 0)
+        if attempts and time.monotonic() - last < RECOVERY_COOLDOWN:
+            return
+        self._recovery_attempts[entity_id] = attempts + 1
+        self._recovery_last[entity_id] = time.monotonic()
+
+        platform = self._platform_of(entity_id)
+        if platform == "zwave_js":
+            _LOGGER.info("Auto-recovery: pinging Z-Wave node for %s", entity_id)
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "zwave_js", "ping", {"entity_id": entity_id}, blocking=False
+                )
+            )
+            return
+
+        # Generic fallback: reload the owning config entry (never our own).
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(entity_id)
+        config_entry_id = entry.config_entry_id if entry else None
+        if not config_entry_id or config_entry_id == self.entry.entry_id:
+            return
+        _LOGGER.info(
+            "Auto-recovery: reloading config entry %s for %s",
+            config_entry_id,
+            entity_id,
+        )
+        self.hass.async_create_task(
+            self.hass.config_entries.async_reload(config_entry_id)
+        )
+
     # -- Coalesced snapshot publishing --------------------------------------
 
     def _schedule_write(self) -> None:
         """Debounce sensor writes so a flapping storm can't thrash the state machine."""
+        # Persist (debounced by the Store itself).
+        self._store.async_delay_save(self._store_data, _STORE_DEBOUNCE)
         if self._write_scheduled:
             return
         self._write_scheduled = True
@@ -356,16 +579,36 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     def _build_snapshot(self) -> _Snapshot:
         by_integration: dict[str, int] = {}
         by_area: dict[str, int] = {}
+        active = 0
+        stale = 0
+        oldest_inc: Incident | None = None
         for inc in self._down.values():
+            if inc.stale:
+                stale += 1
+                continue
+            active += 1
             key = inc.integration or "unknown"
             by_integration[key] = by_integration.get(key, 0) + 1
             akey = inc.area or "unassigned"
             by_area[akey] = by_area.get(akey, 0) + 1
+            if oldest_inc is None or inc.since < oldest_inc.since:
+                oldest_inc = inc
+
+        longest = None
+        if oldest_inc is not None:
+            longest = {
+                "entity_id": oldest_inc.entity_id,
+                "name": oldest_inc.name,
+                "since": oldest_inc.since,
+            }
         return _Snapshot(
-            count=len(self._down),
+            count=active,
             incidents=dict(self._down),
             by_integration=by_integration,
             by_area=by_area,
+            recovered_today=self._recovered_today,
+            longest_down=longest,
+            stale_count=stale,
         )
 
     async def _async_update_data(self) -> _Snapshot:
