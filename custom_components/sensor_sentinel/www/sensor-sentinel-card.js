@@ -172,10 +172,11 @@ class SensorSentinelCard extends HTMLElement {
     this._render();
   }
 
-  _exclude(entityId) {
-    // Reversible (removable in Configure), so no blocking confirm dialog.
+  _doExclude(entityId) {
+    this._modal = null;
     this._hass.callService("sensor_sentinel", "exclude", { entity_id: entityId });
-    this._toast(`Excluded ${entityId} — undo in the integration's Configure dialog`);
+    this._toast(`Excluded ${this._nameFor(entityId)} — undo in the integration's Configure dialog`);
+    this._render();
   }
 
   async _disableEntity(entityId) {
@@ -496,7 +497,7 @@ class SensorSentinelCard extends HTMLElement {
           <span class="ss-group-count">${rows.length}</span>
           <span class="ss-group-actions">
             <button data-gact="snooze" data-gkey="${encodeURIComponent(key)}" title="Snooze all in group">💤</button>
-            <button data-gact="exclude" data-gkey="${encodeURIComponent(key)}" title="Exclude all in group">🚫</button>
+            <button data-gact="exclude" data-gkey="${encodeURIComponent(key)}" title="Exclude all in group">⚠️</button>
           </span>
         </div>
         ${items}
@@ -514,8 +515,8 @@ class SensorSentinelCard extends HTMLElement {
       ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
       <button data-act="why" data-eid="${eid}" title="Why?">?</button>
       <button data-act="snooze" data-eid="${eid}" title="Snooze">💤</button>
-      <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">🚫</button>
-      <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant"><ha-icon icon="mdi:power-off" class="ss-mdi"></ha-icon></button>`;
+      <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">⚠️</button>
+      <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant">🚫</button>`;
     // Render the clickable area as a real <a> to the device page when the
     // entity has a device, so right-click / cmd-click / middle-click can open
     // it in a new tab. Plain left-clicks are intercepted for in-app nav.
@@ -582,7 +583,7 @@ class SensorSentinelCard extends HTMLElement {
         const act = btn.getAttribute("data-act");
         if (act === "why") this._why(eid);
         else if (act === "snooze") this._openModal({ kind: "snooze", eid, name: this._nameFor(eid) });
-        else if (act === "exclude") this._exclude(eid);
+        else if (act === "exclude") this._openModal({ kind: "exclude", eid, name: this._nameFor(eid) });
         else if (act === "ping") this._ping(eid);
         else if (act === "disable") this._openModal({ kind: "disable", eid, name: this._nameFor(eid) });
       })
@@ -632,6 +633,12 @@ class SensorSentinelCard extends HTMLElement {
         ).join("") +
         `</div>`;
       actionsHtml = `<button class="ss-mbtn" data-mact="close">Cancel</button>`;
+    } else if (m.kind === "exclude") {
+      title = `Exclude ${m.name}?`;
+      bodyHtml = `<div class="ss-msub">Adds a Sentinel rule so this entity is never reported as down. It stays fully active in Home Assistant — undo anytime in the integration's <b>Configure</b> dialog. (To remove it from Home Assistant entirely, use <b>Disable</b> instead.)</div>`;
+      actionsHtml =
+        `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
+        `<button class="ss-mbtn ss-mprimary" data-mact="exclude">Exclude</button>`;
     } else if (m.kind === "disable") {
       title = `Disable ${m.name}?`;
       bodyHtml = `<div class="ss-msub">This disables the entity in Home Assistant — it is removed until you re-enable it in <b>Settings → Devices &amp; Services → Entities</b> (needs a reload). This is different from <b>Exclude</b>, which only hides it from Sensor Sentinel.</div>`;
@@ -662,6 +669,7 @@ class SensorSentinelCard extends HTMLElement {
         if (act === "close") this._closeModal();
         else if (act === "snooze")
           this._snoozeMinutes(this._modal.eid, Number(el.getAttribute("data-min")));
+        else if (act === "exclude") this._doExclude(this._modal.eid);
         else if (act === "disable") this._disableEntity(this._modal.eid);
       })
     );
@@ -699,7 +707,7 @@ class SensorSentinelCard extends HTMLElement {
             font-weight:400; font-size:.8rem; }
           .ss-group-actions { display:flex; gap:2px; }
           .ss-group-actions button, .ss-actions button { background:none; border:none;
-            cursor:pointer; font-size:1rem; padding:2px 4px; border-radius:6px; }
+            cursor:pointer; font-size:1rem; padding:3px 5px; border-radius:6px; }
           .ss-group-actions button:hover, .ss-actions button:hover { background:var(--secondary-background-color); }
           .ss-row { display:flex; align-items:center; gap:8px; padding:6px 0 6px 18px; }
           .ss-row-main { flex:1; min-width:0; cursor:pointer; text-decoration:none; color:inherit; }
@@ -708,7 +716,7 @@ class SensorSentinelCard extends HTMLElement {
           .ss-badge { font-size:.7rem; border:1px solid; border-radius:6px; padding:0 4px; }
           .ss-flap { color:var(--warning-color,#ffa600); }
           .ss-stale { color:var(--secondary-text-color); }
-          .ss-actions { display:flex; align-items:center; gap:2px; flex-shrink:0; }
+          .ss-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
           .ss-empty { padding:14px 2px; color:var(--secondary-text-color); }
@@ -733,6 +741,8 @@ class SensorSentinelCard extends HTMLElement {
           .ss-mbtn:hover { background:var(--divider-color); }
           .ss-mgridbtn { padding:14px; font-size:1.05rem; font-weight:600; }
           .ss-mdanger { border-color:var(--error-color,#db4437); color:var(--error-color,#db4437);
+            background:transparent; }
+          .ss-mprimary { border-color:var(--primary-color,#03a9f4); color:var(--primary-color,#03a9f4);
             background:transparent; }
         </style>
         ${inner}
@@ -784,4 +794,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.4 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.5 ", "background:#0288d1;color:#fff", "");
