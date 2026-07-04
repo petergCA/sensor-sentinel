@@ -17,7 +17,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 
 from .const import (
     CONF_BAD_STATES,
@@ -75,14 +75,36 @@ _DEFAULTS: dict[str, Any] = {
 
 def _tag_selector(current: list[str]) -> selector.SelectSelector:
     """A free-text, multi-value tag input pre-seeded with the current values."""
+    return _pick_selector(current, current)
+
+
+def _pick_selector(options: list[str], current: list[str]) -> selector.SelectSelector:
+    """Multi-select dropdown offering ``options`` (plus any current values), while
+    still allowing a typed custom entry for values not present right now."""
+    merged = sorted(set(options) | set(current))
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=sorted(set(current)),
+            options=merged,
             multiple=True,
             custom_value=True,
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
+
+
+def _present_integrations(hass) -> list[str]:
+    """The platform (integration) names that currently own at least one entity.
+
+    This is exactly what an integration-exclusion rule matches on, so offering
+    these as options guarantees a picked value actually excludes something.
+    """
+    registry = er.async_get(hass)
+    return sorted({e.platform for e in registry.entities.values() if e.platform})
+
+
+def _present_domains(hass) -> list[str]:
+    """The entity domains currently present in the state machine."""
+    return sorted({state.entity_id.partition(".")[0] for state in hass.states.async_all()})
 
 
 class SentinelOptionsFlow(OptionsFlow):
@@ -113,11 +135,17 @@ class SentinelOptionsFlow(OptionsFlow):
                 ),
                 vol.Optional(
                     CONF_EXCLUDED_DOMAINS, default=self._current(CONF_EXCLUDED_DOMAINS)
-                ): _tag_selector(self._current(CONF_EXCLUDED_DOMAINS)),
+                ): _pick_selector(
+                    _present_domains(self.hass),
+                    self._current(CONF_EXCLUDED_DOMAINS),
+                ),
                 vol.Optional(
                     CONF_EXCLUDED_INTEGRATIONS,
                     default=self._current(CONF_EXCLUDED_INTEGRATIONS),
-                ): _tag_selector(self._current(CONF_EXCLUDED_INTEGRATIONS)),
+                ): _pick_selector(
+                    _present_integrations(self.hass),
+                    self._current(CONF_EXCLUDED_INTEGRATIONS),
+                ),
                 vol.Optional(
                     CONF_EXCLUDED_PATTERNS,
                     default=self._current(CONF_EXCLUDED_PATTERNS),
