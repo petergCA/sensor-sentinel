@@ -4,10 +4,11 @@ A **performance-safe, event-driven watchdog** for Home Assistant that answers
 one question well: **"what's unavailable right now, and why?"** — across your
 whole fleet, without ever rescanning every entity on every state change.
 
-> Built to replace a `sensor.unavailable_entities` template that took Core down
-> (2.3 GB RSS, 44% CPU) by rescanning ~6,800 entities on every event. Sensor
-> Sentinel keeps an **incremental in-memory set** instead: one scan at startup,
-> then O(1) work per `state_changed` event.
+> **Built to stay invisible.** Most "unavailable entities" helpers rescan every
+> entity on every state change, which can bog Home Assistant down on a large
+> setup. Sensor Sentinel tracks changes incrementally — one scan at startup,
+> then near-zero work per event — so it stays light even across thousands of
+> entities.
 
 It ships with a companion Lovelace card, so once it's installed you get a live,
 grouped, actionable list of everything that's down — with one-click snooze,
