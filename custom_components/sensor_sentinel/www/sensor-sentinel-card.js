@@ -226,10 +226,28 @@ class SensorSentinelCard extends HTMLElement {
     this._toast(`Excluded ${entityIds.length} entities — undo in Configure`);
   }
 
-  _moreInfo(entityId) {
+  _openEntity(entityId) {
+    // Prefer the entity's device page; fall back to the more-info dialog for
+    // entities that aren't attached to a device.
+    const deviceId = this._hass?.entities?.[entityId]?.device_id;
+    if (deviceId) {
+      this._navigate(`/config/devices/device/${deviceId}`);
+    } else {
+      this.dispatchEvent(
+        new CustomEvent("hass-more-info", {
+          detail: { entityId },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
+  }
+
+  _navigate(path) {
+    history.pushState(null, "", path);
     this.dispatchEvent(
-      new CustomEvent("hass-more-info", {
-        detail: { entityId },
+      new CustomEvent("location-changed", {
+        detail: { replace: false },
         bubbles: true,
         composed: true,
       })
@@ -462,7 +480,7 @@ class SensorSentinelCard extends HTMLElement {
     }
     return `
       <div class="ss-row">
-        <div class="ss-row-main" data-info="${eid}" title="Open ${eid}">
+        <div class="ss-row-main" data-info="${eid}" title="Open device page for ${eid}">
           <div class="ss-name">${inc.name || eid}${badges}</div>
           <div class="ss-meta">${inc.area || "—"} · ${inc.state} · ${this._duration(inc.since)}</div>
         </div>
@@ -500,7 +518,7 @@ class SensorSentinelCard extends HTMLElement {
     );
 
     this.querySelectorAll(".ss-row-main[data-info]").forEach((el) =>
-      el.addEventListener("click", () => this._moreInfo(el.getAttribute("data-info")))
+      el.addEventListener("click", () => this._openEntity(el.getAttribute("data-info")))
     );
 
     this.querySelectorAll("button[data-act]").forEach((btn) =>
@@ -643,4 +661,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.0 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.1 ", "background:#0288d1;color:#fff", "");
