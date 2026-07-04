@@ -512,8 +512,8 @@ class SensorSentinelCard extends HTMLElement {
       (inc.stale ? ' <span class="ss-badge ss-stale">stale</span>' : "");
 
     const actions = `
-      ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
       <button data-act="why" data-eid="${eid}" title="Why?">?</button>
+      ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
       <button data-act="snooze" data-eid="${eid}" title="Snooze">💤</button>
       <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">⚠️</button>
       <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant">🚫</button>`;
@@ -794,4 +794,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.5 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.6 ", "background:#0288d1;color:#fff", "");
