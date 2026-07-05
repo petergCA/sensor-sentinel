@@ -14,6 +14,8 @@ It ships with a companion Lovelace card, so once it's installed you get a live,
 grouped, actionable list of everything that's down — with one-click snooze,
 exclude, disable, and Z-Wave ping.
 
+![Annotated Sensor Sentinel card — what each part does](docs/card-annotated.png)
+
 ---
 
 ## Contents
@@ -101,10 +103,9 @@ events carry full context for your own automations. See [Events](#events).
 
 ## Using the card
 
-![Annotated Sensor Sentinel card](docs/card-annotated.png)
-
 Incidents are grouped (by integration or area) and sorted (by count or name).
-Each group and the header have controls:
+Each group and the header have controls ([see the annotated card
+above](#sensor-sentinel)):
 
 **Header**
 
