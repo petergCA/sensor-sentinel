@@ -782,7 +782,7 @@ class SensorSentinelCard extends HTMLElement {
       <ha-card>
         <style>
           ha-card { padding: 12px 16px 16px; }
-          .ss-head { display:flex; align-items:center; gap:12px; }
+          .ss-head { display:flex; align-items:center; gap:6px; }
           .ss-count { font-size:2.2rem; font-weight:700; min-width:2ch; text-align:center;
             border-radius:12px; padding:2px 10px; }
           .ss-count.bad { color:var(--error-color,#db4437); }
@@ -828,7 +828,7 @@ class SensorSentinelCard extends HTMLElement {
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
           .ss-empty { padding:14px 2px 14px 20px; color:var(--secondary-text-color); }
-          .ss-cleartext { margin-left:14px; }
+          .ss-cleartext { margin-left:24px; }
           .ss-note { color:var(--secondary-text-color); font-size:.75rem; margin-top:8px; font-style:italic; }
           .ss-modal-overlay { position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.55);
             display:flex; align-items:center; justify-content:center; padding:16px; }
@@ -903,4 +903,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.14 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.15 ", "background:#0288d1;color:#fff", "");
