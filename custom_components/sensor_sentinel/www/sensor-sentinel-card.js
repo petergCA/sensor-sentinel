@@ -497,7 +497,7 @@ class SensorSentinelCard extends HTMLElement {
 
     let body;
     if (count === 0) {
-      body = `<div class="ss-empty">✅ Everything's up — nothing down right now.</div>`;
+      body = `<div class="ss-empty">✅<span class="ss-cleartext">Everything's up — nothing down right now.</span></div>`;
     } else if (incidents.length === 0) {
       body = `<div class="ss-empty">No incidents match “${this._filter}”.</div>`;
     } else {
@@ -827,7 +827,8 @@ class SensorSentinelCard extends HTMLElement {
           .ss-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
-          .ss-empty { padding:14px 2px 14px 30px; color:var(--secondary-text-color); }
+          .ss-empty { padding:14px 2px 14px 20px; color:var(--secondary-text-color); }
+          .ss-cleartext { margin-left:14px; }
           .ss-note { color:var(--secondary-text-color); font-size:.75rem; margin-top:8px; font-style:italic; }
           .ss-modal-overlay { position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.55);
             display:flex; align-items:center; justify-content:center; padding:16px; }
@@ -902,4 +903,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.13 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.14 ", "background:#0288d1;color:#fff", "");
