@@ -129,11 +129,14 @@ action buttons:
 | **🚫** | **Disable** — disable the entity in Home Assistant entirely (removed until you re-enable it in Settings → Entities). |
 
 Group headers offer **snooze-all** and **exclude-all** for everything in the
-group. Snooze, exclude, and disable all open a confirmation dialog first.
+group, plus — for integration groups — a **reload** button that reloads that
+integration (often the quickest fix when a whole integration has gone dark).
+Snooze, exclude, disable, and reload all open a confirmation dialog first.
 
 **Card options** (visual editor): count entity, group by *integration/area*,
 sort by *count/name*, collapse groups by default, show the Z-Wave ping button,
-and the trend sparkline window in hours (0 = off).
+show the per-group reload button, and the trend sparkline window in hours
+(0 = off).
 
 ## Configuration
 

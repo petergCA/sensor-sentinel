@@ -16,6 +16,7 @@ const CONFIG_DEFAULTS = {
   group_by: "integration",
   collapse_by_default: false,
   zwave_ping: true,
+  show_reload: true,
   sparkline_hours: 0,
 };
 
@@ -47,6 +48,7 @@ const EDITOR_SCHEMA = [
   },
   { name: "collapse_by_default", selector: { boolean: {} } },
   { name: "zwave_ping", selector: { boolean: {} } },
+  { name: "show_reload", selector: { boolean: {} } },
   {
     name: "sparkline_hours",
     selector: {
@@ -61,6 +63,7 @@ const EDITOR_LABELS = {
   sort: "Sort groups",
   collapse_by_default: "Collapse groups by default",
   zwave_ping: "Show Z-Wave ping button",
+  show_reload: "Show reload-integration button (per group)",
   sparkline_hours: "Trend sparkline window (hours, 0 = off)",
 };
 
@@ -286,6 +289,24 @@ class SensorSentinelCard extends HTMLElement {
       this._hass.callService("sensor_sentinel", "exclude", { entity_id: eid });
     }
     this._toast(`Excluded ${ids.length} entities — undo in Configure`);
+    this._render();
+  }
+
+  async _reloadIntegration(key) {
+    this._modal = null;
+    const ids = this._idsForGroup(key);
+    try {
+      // Target the group's entities; HA reloads the config entries they belong to.
+      await this._hass.callService(
+        "homeassistant",
+        "reload_config_entry",
+        {},
+        { entity_id: ids }
+      );
+      this._toast(`Reloading ${this._groupLabel(key)}…`);
+    } catch (e) {
+      this._toast(`Reload failed (admin required?): ${e}`);
+    }
     this._render();
   }
 
@@ -548,6 +569,11 @@ class SensorSentinelCard extends HTMLElement {
           <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${this._groupLabel(key)}</span>
           <span class="ss-group-count">${rows.length}</span>
           <span class="ss-group-actions">
+            ${
+              this._config.group_by === "integration" && this._config.show_reload
+                ? `<button data-gact="reload" data-gkey="${encodeURIComponent(key)}" title="Reload this integration">🔄</button>`
+                : ""
+            }
             <button data-gact="snooze" data-gkey="${encodeURIComponent(key)}" title="Snooze all in group">💤</button>
             <button data-gact="exclude" data-gkey="${encodeURIComponent(key)}" title="Exclude all in group">⚠️</button>
           </span>
@@ -652,12 +678,9 @@ class SensorSentinelCard extends HTMLElement {
         const count = this._idsForGroup(key).length;
         if (!count) return;
         const act = btn.getAttribute("data-gact");
-        this._openModal({
-          kind: act === "snooze" ? "gsnooze" : "gexclude",
-          key,
-          label: this._groupLabel(key),
-          count,
-        });
+        const kind =
+          act === "snooze" ? "gsnooze" : act === "exclude" ? "gexclude" : "reload";
+        this._openModal({ kind, key, label: this._groupLabel(key), count });
       })
     );
   }
@@ -704,6 +727,12 @@ class SensorSentinelCard extends HTMLElement {
       actionsHtml =
         `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
         `<button class="ss-mbtn ss-mprimary" data-mact="gexclude">Exclude ${m.count}</button>`;
+    } else if (m.kind === "reload") {
+      title = `Reload ${m.label}?`;
+      bodyHtml = `<div class="ss-msub">Reloads this integration's config entry. Its entities briefly go unavailable and come back — often the quickest fix when a whole integration has gone dark. Needs an admin user.</div>`;
+      actionsHtml =
+        `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
+        `<button class="ss-mbtn ss-mprimary" data-mact="reload">Reload</button>`;
     } else if (m.kind === "gsnooze") {
       title = `Snooze all in ${m.label}`;
       bodyHtml =
@@ -741,6 +770,7 @@ class SensorSentinelCard extends HTMLElement {
         else if (act === "exclude") this._doExclude(this._modal.eid);
         else if (act === "disable") this._disableEntity(this._modal.eid);
         else if (act === "gexclude") this._bulkExclude(this._modal.key);
+        else if (act === "reload") this._reloadIntegration(this._modal.key);
         else if (act === "gsnooze")
           this._bulkSnooze(this._modal.key, Number(el.getAttribute("data-min")));
       })
@@ -872,4 +902,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.10 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.11 ", "background:#0288d1;color:#fff", "");
