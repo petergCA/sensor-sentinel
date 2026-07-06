@@ -566,16 +566,15 @@ class SensorSentinelCard extends HTMLElement {
       <div class="ss-group">
         <div class="ss-group-head">
           <span class="ss-caret" data-toggle="${encodeURIComponent(key)}">${collapsed ? "▸" : "▾"}</span>
-          <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${this._groupLabel(key)}</span>
-          <span class="ss-group-count">${rows.length}</span>
+          <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${this._groupLabel(key)} <span class="ss-group-count">(${rows.length})</span></span>
           <span class="ss-group-actions">
-            ${
-              this._config.group_by === "integration" && this._config.show_reload
-                ? `<button data-gact="reload" data-gkey="${encodeURIComponent(key)}" title="Reload this integration">🔄</button>`
-                : ""
-            }
             <button data-gact="snooze" data-gkey="${encodeURIComponent(key)}" title="Snooze all in group">💤</button>
             <button data-gact="exclude" data-gkey="${encodeURIComponent(key)}" title="Exclude all in group">⚠️</button>
+            ${
+              this._config.group_by === "integration" && this._config.show_reload
+                ? `<button data-gact="reload" data-gkey="${encodeURIComponent(key)}" title="Reload this integration"><ha-icon icon="mdi:reload" class="ss-reload"></ha-icon></button>`
+                : `<span class="ss-slot"></span>`
+            }
           </span>
         </div>
         ${items}
@@ -811,12 +810,14 @@ class SensorSentinelCard extends HTMLElement {
             font-weight:600; padding:4px 0; border-bottom:1px solid var(--divider-color); }
           .ss-caret, .ss-group-name { cursor:pointer; }
           .ss-caret { width:1ch; color:var(--secondary-text-color); }
-          .ss-group-count { margin-left:auto; color:var(--secondary-text-color);
-            font-weight:400; font-size:.8rem; }
-          .ss-group-actions { display:flex; gap:2px; }
-          .ss-group-actions button, .ss-actions button { background:none; border:none;
-            cursor:pointer; font-size:1rem; padding:3px 5px; border-radius:6px; }
+          .ss-group-count { color:var(--secondary-text-color); font-weight:400; }
+          .ss-group-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
+          .ss-group-actions button, .ss-actions button { display:inline-flex; align-items:center;
+            justify-content:center; width:28px; height:28px; padding:0; background:none;
+            border:none; cursor:pointer; font-size:1rem; border-radius:6px; }
           .ss-group-actions button:hover, .ss-actions button:hover { background:var(--secondary-background-color); }
+          .ss-slot { width:28px; flex:0 0 28px; }
+          .ss-reload { --mdc-icon-size:20px; color:var(--primary-color,#03a9f4); }
           .ss-row { display:flex; align-items:center; gap:8px; padding:6px 0 6px 18px; }
           .ss-row-main { flex:1; min-width:0; cursor:pointer; text-decoration:none; color:inherit; }
           .ss-name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -903,4 +904,4 @@ window.customCards.push({
   preview: true,
   documentationURL: "https://github.com/petergCA/sensor-sentinel",
 });
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.15 ", "background:#0288d1;color:#fff", "");
+console.info("%c SENSOR-SENTINEL-CARD %c v0.6.16 ", "background:#0288d1;color:#fff", "");
