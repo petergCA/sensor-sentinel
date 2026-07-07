@@ -10,6 +10,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 
 from .const import DATA_MANAGER, DOMAIN
 from .coordinator import SentinelCoordinator
@@ -25,15 +26,21 @@ CARD_FILENAME = "sensor-sentinel-card.js"
 CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
 
 
-async def _async_register_card(hass: HomeAssistant) -> None:
-    """Serve and auto-load the bundled Lovelace card (no manual resource setup)."""
+async def _async_register_card(hass: HomeAssistant, version: str) -> None:
+    """Serve and auto-load the bundled Lovelace card (no manual resource setup).
+
+    The auto-loaded URL carries a ``?v=<version>`` query so that after an update
+    the browser is forced to fetch the new module instead of an old cached copy
+    shadowing it — a stale module is one way the card ends up mis-registered and
+    renders "Configuration Error" until a hard refresh.
+    """
     if hass.data.get(f"{DOMAIN}_card_registered"):
         return
     card_path = os.path.join(os.path.dirname(__file__), "www", CARD_FILENAME)
     await hass.http.async_register_static_paths(
         [StaticPathConfig(CARD_URL, card_path, cache_headers=False)]
     )
-    add_extra_js_url(hass, CARD_URL)
+    add_extra_js_url(hass, f"{CARD_URL}?v={version}")
     hass.data[f"{DOMAIN}_card_registered"] = True
 
 
@@ -56,7 +63,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # path or frontend hiccup fail setup and leave the integration in a
     # "Configuration Error" state — log and carry on.
     try:
-        await _async_register_card(hass)
+        integration = await async_get_integration(hass, DOMAIN)
+        await _async_register_card(hass, str(integration.version or "0"))
     except Exception:  # noqa: BLE001
         _LOGGER.warning(
             "Could not register the Sensor Sentinel dashboard card; "

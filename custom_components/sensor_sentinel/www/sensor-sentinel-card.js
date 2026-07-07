@@ -894,14 +894,37 @@ class SensorSentinelCardEditor extends HTMLElement {
   }
 }
 
-customElements.define("sensor-sentinel-card-editor", SensorSentinelCardEditor);
-customElements.define("sensor-sentinel-card", SensorSentinelCard);
+// Guard every registration. Home Assistant frontends that load the
+// scoped-custom-element-registry polyfill (tabbed-card, layout-card, …) patch
+// customElements.define globally, and the card module can be evaluated more
+// than once (polyfill timing, frontend re-init, or the auto-loaded copy racing
+// a cached one). An unguarded define() then THROWS "the name … has already been
+// used with this registry"; if that throws on the editor before the card is
+// registered, the card element never finishes defining and Lovelace paints
+// "Configuration Error" until a hard refresh. Registering only when absent — and
+// pushing to customCards only once — makes a repeat evaluation a harmless no-op.
+const _ssDefine = (name, cls) => {
+  if (!customElements.get(name)) {
+    try {
+      customElements.define(name, cls);
+    } catch (e) {
+      // Another evaluation won the race between get() and define(); that copy
+      // is already serving the element, so this is safe to ignore.
+      console.debug(`sensor-sentinel: ${name} already defined`, e);
+    }
+  }
+};
+_ssDefine("sensor-sentinel-card-editor", SensorSentinelCardEditor);
+_ssDefine("sensor-sentinel-card", SensorSentinelCard);
+
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "sensor-sentinel-card",
-  name: "Sensor Sentinel Card",
-  description: "Live unavailable-entity incidents with search, grouping, and one-click actions.",
-  preview: true,
-  documentationURL: "https://github.com/petergCA/sensor-sentinel",
-});
-console.info("%c SENSOR-SENTINEL-CARD %c v0.6.16 ", "background:#0288d1;color:#fff", "");
+if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
+  window.customCards.push({
+    type: "sensor-sentinel-card",
+    name: "Sensor Sentinel Card",
+    description: "Live unavailable-entity incidents with search, grouping, and one-click actions.",
+    preview: true,
+    documentationURL: "https://github.com/petergCA/sensor-sentinel",
+  });
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.6.18 ", "background:#0288d1;color:#fff", "");
+}
