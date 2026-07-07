@@ -52,7 +52,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await async_register_services(hass)
     async_register_websocket(hass)
-    await _async_register_card(hass)
+    # The bundled card is a convenience, not core function. Never let a static-
+    # path or frontend hiccup fail setup and leave the integration in a
+    # "Configuration Error" state — log and carry on.
+    try:
+        await _async_register_card(hass)
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning(
+            "Could not register the Sensor Sentinel dashboard card; "
+            "the integration will run without it",
+            exc_info=True,
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))

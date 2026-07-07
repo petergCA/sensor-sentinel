@@ -141,19 +141,29 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
     def _load_tunables(self) -> None:
         opts = self.entry.options
-        self._bad_states = frozenset(opts.get(CONF_BAD_STATES, DEFAULT_BAD_STATES))
-        self._grace = float(opts.get(CONF_GRACE_PERIOD, DEFAULT_GRACE_PERIOD))
-        self._startup_grace = float(
-            opts.get(CONF_STARTUP_GRACE, DEFAULT_STARTUP_GRACE)
-        )
-        self._realert_hours = float(opts.get(CONF_REALERT_HOURS, DEFAULT_REALERT_HOURS))
-        self._stale_days = float(opts.get(CONF_STALE_DAYS, DEFAULT_STALE_DAYS))
+
+        def _num(key: str, default: float) -> float:
+            """Read a numeric option, falling back to the default if it is
+            missing, None, or otherwise un-coercible. Setup must never die on a
+            corrupted option value."""
+            try:
+                value = opts.get(key)
+                return float(default if value is None else value)
+            except (TypeError, ValueError):
+                return float(default)
+
+        raw_states = opts.get(CONF_BAD_STATES) or DEFAULT_BAD_STATES
+        self._bad_states = frozenset(
+            s for s in raw_states if isinstance(s, str) and s
+        ) or frozenset(DEFAULT_BAD_STATES)
+        self._grace = _num(CONF_GRACE_PERIOD, DEFAULT_GRACE_PERIOD)
+        self._startup_grace = _num(CONF_STARTUP_GRACE, DEFAULT_STARTUP_GRACE)
+        self._realert_hours = _num(CONF_REALERT_HOURS, DEFAULT_REALERT_HOURS)
+        self._stale_days = _num(CONF_STALE_DAYS, DEFAULT_STALE_DAYS)
         self._auto_recovery = bool(
             opts.get(CONF_AUTO_RECOVERY, DEFAULT_AUTO_RECOVERY)
         )
-        self._recovery_delay = float(
-            opts.get(CONF_RECOVERY_DELAY, DEFAULT_RECOVERY_DELAY)
-        )
+        self._recovery_delay = _num(CONF_RECOVERY_DELAY, DEFAULT_RECOVERY_DELAY)
 
     async def async_options_updated(self) -> None:
         """Re-read options after the user edits the exclusions UI."""

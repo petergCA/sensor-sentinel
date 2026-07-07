@@ -7,6 +7,7 @@ proposed rule set would silence before you save — no blind over-exclusion.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -49,6 +50,8 @@ from .const import (
 )
 from .exclusions import ExclusionEngine
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
     """Single-instance setup — there is one watchdog per HA instance."""
@@ -88,16 +91,66 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 
-def _tag_selector(current: list[str]) -> selector.SelectSelector:
+def _clean_str_list(value: Any) -> list[str]:
+    """Coerce a multi-value selector's output into a clean list of strings.
+
+    The frontend can submit ``None`` or empty entries for a custom-value combo
+    box, and — critically — an entity picker emits ``null`` for a stored
+    ``entity_id`` that no longer resolves (a removed/renamed entity). HA's
+    ``cv.string`` rejects ``None`` with "string value is None", and because that
+    fires inside the framework's validation of the submitted form it takes the
+    whole options dialog down as a generic "Configuration Error".
+
+    Running this as the *first* step of every list field's validation strips the
+    offending values before any strict validator sees them, so a stale exclusion
+    or a stray empty chip can never crash the dialog. It is deliberately total:
+    any non-list becomes a (possibly empty) list, never an exception.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+    cleaned: list[str] = []
+    for item in value:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+class _CleanSelectSelector(selector.SelectSelector):
+    """A ``SelectSelector`` that drops ``None``/empty entries before validating.
+
+    Sanitising inside ``__call__`` (rather than via a ``vol.All`` wrapper) keeps
+    the value a genuine Selector, so the frontend still renders the dropdown
+    exactly as before — a ``vol.All(func, selector)`` would risk breaking schema
+    serialisation and the dialog wouldn't even open.
+    """
+
+    def __call__(self, data: Any) -> list[str]:
+        return super().__call__(_clean_str_list(data))
+
+
+class _CleanEntitySelector(selector.EntitySelector):
+    """An ``EntitySelector`` that drops the ``null`` the picker emits for a stored
+    entity_id that no longer resolves — the exact value that crashed the dialog."""
+
+    def __call__(self, data: Any) -> list[str]:
+        return super().__call__(_clean_str_list(data))
+
+
+def _tag_selector(current: list[str]) -> _CleanSelectSelector:
     """A free-text, multi-value tag input pre-seeded with the current values."""
     return _pick_selector(current, current)
 
 
-def _pick_selector(options: list[str], current: list[str]) -> selector.SelectSelector:
+def _pick_selector(options: list[str], current: list[str]) -> _CleanSelectSelector:
     """Multi-select dropdown offering ``options`` (plus any current values), while
     still allowing a typed custom entry for values not present right now."""
-    merged = sorted(set(options) | set(current))
-    return selector.SelectSelector(
+    merged = sorted(set(_clean_str_list(options)) | set(_clean_str_list(current)))
+    return _CleanSelectSelector(
         selector.SelectSelectorConfig(
             options=merged,
             multiple=True,
@@ -143,7 +196,7 @@ class SentinelOptionsFlow(OptionsFlow):
             {
                 vol.Required(
                     CONF_BAD_STATES, default=self._current(CONF_BAD_STATES)
-                ): selector.SelectSelector(
+                ): _CleanSelectSelector(
                     selector.SelectSelectorConfig(
                         options=["unavailable", "unknown"], multiple=True
                     )
@@ -168,7 +221,7 @@ class SentinelOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_EXCLUDED_ENTITIES,
                     default=self._current(CONF_EXCLUDED_ENTITIES),
-                ): selector.EntitySelector(
+                ): _CleanEntitySelector(
                     selector.EntitySelectorConfig(multiple=True)
                 ),
                 vol.Required(
@@ -241,7 +294,12 @@ class SentinelOptionsFlow(OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=self._proposed)
 
-        newly_silenced = self._newly_silenced()
+        try:
+            newly_silenced = self._newly_silenced()
+        except Exception:  # noqa: BLE001 - the preview is advisory; never let it
+            # take the dialog down. Worst case we show an empty preview and save.
+            _LOGGER.debug("Dry-run preview computation failed", exc_info=True)
+            newly_silenced = []
         if newly_silenced:
             preview = "\n".join(f"• {eid}" for eid in newly_silenced[:30])
             if len(newly_silenced) > 30:
