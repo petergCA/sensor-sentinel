@@ -587,6 +587,8 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         recovered = stored.get("recovered", {})
         if recovered.get("date") == self._recovered_date:
             self._recovered_today = int(recovered.get("count", 0))
+        for entity_id, pct in (stored.get("battery") or {}).items():
+            self._remember_battery(entity_id, pct)
 
     def _store_data(self) -> dict:
         return {
@@ -596,6 +598,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 "date": self._recovered_date,
                 "count": self._recovered_today,
             },
+            # Persisted so a last-known battery survives a restart. Without
+            # this, a device that died before the restart comes back with no
+            # reading — the exact case you most want the number for.
+            "battery": self._battery_cache,
         }
 
     # -- Periodic housekeeping (re-alert / stale / recovery) ----------------
