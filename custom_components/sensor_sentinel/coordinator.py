@@ -396,15 +396,21 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             # Wait for HA to finish starting, then run the warmup timer.
             @callback
             def _on_started(_event: Event) -> None:
+                # A once-listener removes itself when it fires. Drop our unsub
+                # so shutdown doesn't try to remove it a second time, which HA
+                # logs as "Unable to remove unknown job listener".
+                try:
+                    self._unsub.remove(unsub_started)
+                except ValueError:
+                    pass
                 self._unsub.append(
                     async_call_later(self.hass, self._startup_grace, self._warmup_seed)
                 )
 
-            self._unsub.append(
-                self.hass.bus.async_listen_once(
-                    EVENT_HOMEASSISTANT_STARTED, _on_started
-                )
+            unsub_started = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, _on_started
             )
+            self._unsub.append(unsub_started)
 
         self._schedule_write()
 
