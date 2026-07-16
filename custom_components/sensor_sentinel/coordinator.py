@@ -87,6 +87,11 @@ class Incident:
     device: str | None
     area: str | None
     since: str  # ISO8601 UTC
+    # Last-known-good battery % of the incident's device, or None if it has no
+    # battery sensor. Deliberately the *cached* value, not a live read: when a
+    # battery device drops off, its battery sensor goes unavailable in the same
+    # breath, so reading it here would always yield nothing. See _battery_for.
+    battery: int | None = None
     flapping: bool = False
     stale: bool = False
 
@@ -124,6 +129,12 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._unsub: list[callable] = []
         self._platform_cache: dict[str, str | None] = {}
         self._write_scheduled = False
+
+        # Battery enrichment. Indexed once from the registry (and on registry
+        # updates) so the hot path costs exactly one set lookup.
+        self._battery_entities: set[str] = set()  # battery sensor entity_ids
+        self._battery_by_device: dict[str, str] = {}  # device_id -> battery eid
+        self._battery_cache: dict[str, int] = {}  # battery eid -> last good %
 
         # Persistence + insight/housekeeping state.
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
@@ -222,6 +233,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 "state": state.state,
                 "since": inc.since,
                 "stale": inc.stale,
+                "battery": inc.battery,
             }
         if entity_id in self._pending:
             return {"result": "pending_grace", "state": state.state}
@@ -240,8 +252,66 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._platform_cache[entity_id] = platform
         return platform
 
+    # -- Battery enrichment -------------------------------------------------
+
+    def _index_batteries(self) -> None:
+        """Map devices to their battery sensor. Registry-only — touches no states.
+
+        Rebuilt on registry changes, so the hot path can gate on a set lookup
+        instead of resolving device_class per event.
+        """
+        battery_entities: set[str] = set()
+        by_device: dict[str, str] = {}
+        for entry in er.async_get(self.hass).entities.values():
+            if entry.domain != "sensor" or entry.disabled_by is not None:
+                continue
+            if (entry.device_class or entry.original_device_class) != "battery":
+                continue
+            battery_entities.add(entry.entity_id)
+            # First battery sensor wins; devices rarely have more than one.
+            if entry.device_id and entry.device_id not in by_device:
+                by_device[entry.device_id] = entry.entity_id
+        self._battery_entities = battery_entities
+        self._battery_by_device = by_device
+        # Drop cached values for entities that no longer exist.
+        self._battery_cache = {
+            eid: pct
+            for eid, pct in self._battery_cache.items()
+            if eid in battery_entities
+        }
+
+    def _seed_battery_cache(self) -> None:
+        """Prime the cache from current states, so an incident in the first
+        minutes after a restart still carries a battery reading."""
+        for entity_id in self._battery_entities:
+            state = self.hass.states.get(entity_id)
+            if state is not None:
+                self._remember_battery(entity_id, state.state)
+
+    @callback
+    def _remember_battery(self, entity_id: str, value) -> None:
+        """Cache a battery reading, ignoring unavailable/unknown/non-numeric.
+
+        Keeping the last good value is the whole point: it must survive the
+        device going offline.
+        """
+        try:
+            pct = int(float(value))
+        except (TypeError, ValueError):
+            return
+        if 0 <= pct <= 100:
+            self._battery_cache[entity_id] = pct
+
+    def _battery_for(self, device_id: str | None) -> int | None:
+        if not device_id:
+            return None
+        battery_eid = self._battery_by_device.get(device_id)
+        if battery_eid is None:
+            return None
+        return self._battery_cache.get(battery_eid)
+
     def _enrich(self, entity_id: str, state, since: str | None = None) -> Incident:
-        """Resolve name/integration/device/area. Runs per *incident*, not per event."""
+        """Resolve name/integration/device/area/battery. Runs per *incident*, not per event."""
         ent_reg = er.async_get(self.hass)
         dev_reg = dr.async_get(self.hass)
         area_reg = ar.async_get(self.hass)
@@ -266,6 +336,8 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             area = area_reg.async_get_area(area_id)
             area_name = area.name if area else None
 
+        battery = self._battery_for(entry.device_id if entry else None)
+
         flapping = (time.monotonic() - self._recovered_at.get(entity_id, 0)) < _FLAP_WINDOW
 
         return Incident(
@@ -276,6 +348,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             device=device_name,
             area=area_name,
             since=since or dt_util.utcnow().isoformat(),
+            battery=battery,
             flapping=flapping,
         )
 
@@ -284,6 +357,11 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     async def async_start(self) -> None:
         """Load persisted state, then seed (after a warmup) and go event-driven."""
         await self._load_store()
+
+        # Index batteries before the state listener starts so the very first
+        # incident can be enriched.
+        self._index_batteries()
+        self._seed_battery_cache()
 
         # Publish an empty snapshot so entities never read None before warmup.
         self.data = self._build_snapshot()
@@ -346,6 +424,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     @callback
     def _on_registry_updated(self, event: Event) -> None:
         self._platform_cache.clear()
+        self._index_batteries()
         entity_id = event.data.get("entity_id")
         # Only tracked entities are worth a registry lookup (keep this cheap).
         if not entity_id or (
@@ -405,6 +484,12 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     def _handle_state_changed(self, event: Event) -> None:
         entity_id: str = event.data["entity_id"]
         new_state = event.data.get("new_state")
+
+        # Battery sensors report while the device is still alive, which is the
+        # only time we can capture the value — one set lookup, then out.
+        if entity_id in self._battery_entities:
+            if new_state is not None:
+                self._remember_battery(entity_id, new_state.state)
 
         is_bad = new_state is not None and new_state.state in self._bad_states
         tracked = entity_id in self._down or entity_id in self._pending

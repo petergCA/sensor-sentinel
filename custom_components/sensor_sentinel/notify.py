@@ -31,6 +31,23 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Battery level at which a dropout is more likely a flat cell than a fault.
+_BATTERY_SUSPECT = 20
+
+
+def _battery_suffix(inc: dict) -> str:
+    """Render the device's last-known battery, flagging a likely flat cell.
+
+    This is the first question you ask when a battery device drops off, so it
+    belongs in the alert rather than a dashboard you have to go and open.
+    """
+    battery = inc.get("battery")
+    if battery is None:
+        return ""
+    if battery <= _BATTERY_SUSPECT:
+        return f" — battery {battery}%, likely flat"
+    return f" — battery {battery}%"
+
 # Collect events for this long before sending one grouped notification.
 _BATCH_WINDOW = 5.0
 
@@ -146,14 +163,20 @@ class SentinelNotifier:
                 else:
                     for inc in incidents:
                         flap = " (flapping)" if inc.get("flapping") else ""
-                        lines.append(f"- {inc.get('name', inc['entity_id'])}{flap}")
+                        lines.append(
+                            f"- {inc.get('name', inc['entity_id'])}"
+                            f"{_battery_suffix(inc)}{flap}"
+                        )
         if still_down:
             lines.append("")
             lines.append("**Still down**")
             for inc in still_down:
                 hrs = int(inc.get("down_seconds", 0) // 3600)
                 suffix = f" ({hrs}h)" if hrs else ""
-                lines.append(f"- {inc.get('name', inc['entity_id'])}{suffix}")
+                lines.append(
+                    f"- {inc.get('name', inc['entity_id'])}{suffix}"
+                    f"{_battery_suffix(inc)}"
+                )
         if recovered:
             lines.append("")
             lines.append("**Recovered**")

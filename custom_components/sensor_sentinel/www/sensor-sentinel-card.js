@@ -214,6 +214,12 @@ class SensorSentinelCard extends HTMLElement {
         rows.push(["Status", r.stale ? "Down · stale (treated as retired)" : "Down"]);
         rows.push(["Down since", this._fmtDate(r.since)]);
         rows.push(["Current state", r.state]);
+        if (typeof r.battery === "number") {
+          rows.push([
+            "Battery (last known)",
+            r.battery <= 20 ? `${r.battery}% — likely flat` : `${r.battery}%`,
+          ]);
+        }
       } else if (r.result === "excluded") {
         rows.push(["Status", "Excluded from Sentinel"]);
         rows.push(["Matched rule", `${r.rule_type} = ${r.value}`]);
@@ -584,7 +590,14 @@ class SensorSentinelCard extends HTMLElement {
   _renderRow(inc) {
     const eid = inc.entity_id;
     const canPing = inc.integration === "zwave_js" && this._config.zwave_ping;
+    // A flat cell is the likeliest reason a battery device drops off, so
+    // surface it next to the name rather than making the user go and look.
+    const lowBattery =
+      typeof inc.battery === "number" && inc.battery <= 20
+        ? ` <span class="ss-badge ss-batt">${inc.battery}% battery</span>`
+        : "";
     const badges =
+      lowBattery +
       (inc.flapping ? ' <span class="ss-badge ss-flap">flapping</span>' : "") +
       (inc.stale ? ' <span class="ss-badge ss-stale">stale</span>' : "");
 
@@ -607,7 +620,11 @@ class SensorSentinelCard extends HTMLElement {
       <div class="ss-row">
         ${mainOpen}
           <div class="ss-name">${inc.name || eid}${badges}</div>
-          <div class="ss-meta">${inc.area || "—"} · ${inc.state} · ${this._duration(inc.since)}</div>
+          <div class="ss-meta">${inc.area || "—"} · ${inc.state} · ${this._duration(inc.since)}${
+            typeof inc.battery === "number" && inc.battery > 20
+              ? ` · ${inc.battery}% battery`
+              : ""
+          }</div>
         ${mainClose}
         <div class="ss-actions">${actions}</div>
       </div>`;
@@ -825,6 +842,7 @@ class SensorSentinelCard extends HTMLElement {
           .ss-badge { font-size:.7rem; border:1px solid; border-radius:6px; padding:0 4px; }
           .ss-flap { color:var(--warning-color,#ffa600); }
           .ss-stale { color:var(--secondary-text-color); }
+          .ss-batt { color:var(--error-color,#db4437); }
           .ss-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
