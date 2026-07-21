@@ -826,6 +826,10 @@ class SensorSentinelCard extends HTMLElement {
           .ss-group-head { display:flex; align-items:center; gap:8px;
             font-weight:600; padding:4px 0; border-bottom:1px solid var(--divider-color); }
           .ss-caret, .ss-group-name { cursor:pointer; }
+          /* Stretch the name across the dead space up to the action buttons so
+             the whole header strip (name + the blank area right of it) toggles
+             the group, not just the few characters of the label itself. */
+          .ss-group-name { flex:1; min-width:0; }
           .ss-caret { width:1ch; color:var(--secondary-text-color); }
           .ss-group-count { color:var(--secondary-text-color); font-weight:400; }
           .ss-group-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
@@ -944,5 +948,5 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
     preview: true,
     documentationURL: "https://github.com/petergCA/sensor-sentinel",
   });
-  console.info("%c SENSOR-SENTINEL-CARD %c v0.6.18 ", "background:#0288d1;color:#fff", "");
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.3 ", "background:#0288d1;color:#fff", "");
 }
