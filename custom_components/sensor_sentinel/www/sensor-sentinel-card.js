@@ -74,6 +74,18 @@ const SNOOZE_PRESETS = [
   ["1d", 1440],
 ];
 
+// Everything user- or state-derived (friendly names, areas, raw states, the
+// filter text) goes through here before being interpolated into innerHTML.
+// A single entity named e.g. `Sensor <3 "kitchen"` must not be able to break
+// the card's markup mid-render.
+const esc = (v) =>
+  v == null
+    ? ""
+    : String(v).replace(
+        /[&<>"']/g,
+        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+      );
+
 class SensorSentinelCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement("sensor-sentinel-card-editor");
@@ -84,17 +96,24 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { ...CONFIG_DEFAULTS, ...config };
+    this._config = { ...CONFIG_DEFAULTS, ...(config || {}) };
+    if (!this._config.entity) this._config.entity = DEFAULT_ENTITY;
     this._collapsed = this._loadCollapsed();
     this._filter = this._filter || "";
     this._modal = null;
     // Invalidate cached history so a changed window refetches promptly.
     this._historyFetchedAt = 0;
     this._history = null;
+    // If hass arrived before the config (see the hass setter), render now.
+    if (this._hass) this._render();
   }
 
   set hass(hass) {
     this._hass = hass;
+    // hass can arrive before setConfig (layout cards, rebuild races). Throwing
+    // here is fatal: hui-card catches it and swaps in the red "Configuration
+    // error" card until the next rebuild. Just hold the hass and wait.
+    if (!this._config) return;
     const st = this._stateObj();
     const stamp = st ? st.last_updated : null;
     if (stamp && stamp !== this._stamp) {
@@ -103,6 +122,18 @@ class SensorSentinelCard extends HTMLElement {
     }
     this._maybeFetchHistory();
     this._render();
+  }
+
+  connectedCallback() {
+    // If this element was created before the module finished loading (slow
+    // network/device), a `hass` assigned pre-upgrade sits on the instance and
+    // permanently shadows the class setter. Re-route it through the real one.
+    if (Object.prototype.hasOwnProperty.call(this, "hass")) {
+      const v = this.hass;
+      delete this.hass;
+      this.hass = v;
+    }
+    if (this._hass && this._config) this._render();
   }
 
   getCardSize() {
@@ -382,7 +413,9 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   _duration(sinceIso) {
-    const secs = Math.max(0, (Date.now() - new Date(sinceIso).getTime()) / 1000);
+    const t = new Date(sinceIso || 0).getTime();
+    if (!Number.isFinite(t)) return "?";
+    const secs = Math.max(0, (Date.now() - t) / 1000);
     if (secs < 90) return `${Math.round(secs)}s`;
     if (secs < 5400) return `${Math.round(secs / 60)}m`;
     if (secs < 172800) return `${Math.round(secs / 3600)}h`;
@@ -470,11 +503,29 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   _render() {
-    if (!this._hass) return;
+    // The initial render runs synchronously inside hui-card's hass setter,
+    // which try/catches it — one data-dependent throw would paint the red
+    // "Configuration error" card. Fail soft inside the card instead.
+    try {
+      this._renderInner();
+    } catch (e) {
+      console.error("sensor-sentinel-card: render failed", e);
+      try {
+        this.innerHTML = this._wrap(
+          `<div class="ss-empty">Sensor Sentinel hit a render error (see browser console). It will retry on the next state update.</div>`
+        );
+      } catch (_) {
+        /* never rethrow into hui-card */
+      }
+    }
+  }
+
+  _renderInner() {
+    if (!this._hass || !this._config) return;
     const st = this._stateObj();
     if (!st) {
       this.innerHTML = this._wrap(
-        `<div class="ss-empty">Entity <code>${this._config.entity}</code> not found.</div>`
+        `<div class="ss-empty">Entity <code>${esc(this._config.entity)}</code> not found.</div>`
       );
       return;
     }
@@ -505,7 +556,7 @@ class SensorSentinelCard extends HTMLElement {
     if (count === 0) {
       body = `<div class="ss-empty">✅<span class="ss-cleartext">Everything's up — nothing down right now.</span></div>`;
     } else if (incidents.length === 0) {
-      body = `<div class="ss-empty">No incidents match “${this._filter}”.</div>`;
+      body = `<div class="ss-empty">No incidents match “${esc(this._filter)}”.</div>`;
     } else {
       body = orderedKeys.map((k) => this._renderGroup(k, groups[k])).join("");
       if (!usingFull && attrs.truncated) {
@@ -513,7 +564,7 @@ class SensorSentinelCard extends HTMLElement {
       }
     }
 
-    const filterVal = (this._filter || "").replace(/"/g, "&quot;");
+    const filterVal = esc(this._filter || "");
     const anyExpanded = orderedKeys.some((k) => !this._isCollapsed(k));
     const toggleAllBtn = orderedKeys.length
       ? `<button class="ss-expandall" data-toggleall>
@@ -572,7 +623,7 @@ class SensorSentinelCard extends HTMLElement {
       <div class="ss-group">
         <div class="ss-group-head">
           <span class="ss-caret" data-toggle="${encodeURIComponent(key)}">${collapsed ? "▸" : "▾"}</span>
-          <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${this._groupLabel(key)} <span class="ss-group-count">(${rows.length})</span></span>
+          <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${esc(this._groupLabel(key))} <span class="ss-group-count">(${rows.length})</span></span>
           <span class="ss-group-actions">
             <button data-gact="snooze" data-gkey="${encodeURIComponent(key)}" title="Snooze all in group">💤</button>
             <button data-gact="exclude" data-gkey="${encodeURIComponent(key)}" title="Exclude all in group">⚠️</button>
@@ -602,25 +653,25 @@ class SensorSentinelCard extends HTMLElement {
       (inc.stale ? ' <span class="ss-badge ss-stale">stale</span>' : "");
 
     const actions = `
-      <button data-act="why" data-eid="${eid}" title="Why?">?</button>
-      ${canPing ? `<button data-act="ping" data-eid="${eid}" title="Ping Z-Wave node">📡</button>` : ""}
-      <button data-act="snooze" data-eid="${eid}" title="Snooze">💤</button>
-      <button data-act="exclude" data-eid="${eid}" title="Exclude from Sentinel">⚠️</button>
-      <button data-act="disable" data-eid="${eid}" title="Disable entity in Home Assistant">🚫</button>`;
+      <button data-act="why" data-eid="${esc(eid)}" title="Why?">?</button>
+      ${canPing ? `<button data-act="ping" data-eid="${esc(eid)}" title="Ping Z-Wave node">📡</button>` : ""}
+      <button data-act="snooze" data-eid="${esc(eid)}" title="Snooze">💤</button>
+      <button data-act="exclude" data-eid="${esc(eid)}" title="Exclude from Sentinel">⚠️</button>
+      <button data-act="disable" data-eid="${esc(eid)}" title="Disable entity in Home Assistant">🚫</button>`;
     // Render the clickable area as a real <a> to the device page when the
     // entity has a device, so right-click / cmd-click / middle-click can open
     // it in a new tab. Plain left-clicks are intercepted for in-app nav.
     const deviceId = this._hass?.entities?.[eid]?.device_id;
     const href = deviceId ? `/config/devices/device/${deviceId}` : null;
     const mainOpen = href
-      ? `<a class="ss-row-main" href="${href}" data-info="${eid}" title="Open device page for ${eid}">`
-      : `<div class="ss-row-main" data-info="${eid}" title="Open ${eid}">`;
+      ? `<a class="ss-row-main" href="${href}" data-info="${esc(eid)}" title="Open device page for ${esc(eid)}">`
+      : `<div class="ss-row-main" data-info="${esc(eid)}" title="Open ${esc(eid)}">`;
     const mainClose = href ? "</a>" : "</div>";
     return `
       <div class="ss-row">
         ${mainOpen}
-          <div class="ss-name">${inc.name || eid}${badges}</div>
-          <div class="ss-meta">${inc.area || "—"} · ${inc.state} · ${this._duration(inc.since)}${
+          <div class="ss-name">${esc(inc.name || eid)}${badges}</div>
+          <div class="ss-meta">${esc(inc.area || "—")} · ${esc(inc.state)} · ${this._duration(inc.since)}${
             typeof inc.battery === "number" && inc.battery > 20
               ? ` · ${inc.battery}% battery`
               : ""
@@ -708,15 +759,15 @@ class SensorSentinelCard extends HTMLElement {
     let bodyHtml = "";
     let actionsHtml = `<button class="ss-mbtn" data-mact="close">Close</button>`;
     if (m.kind === "why") {
-      title = m.name;
+      title = esc(m.name);
       bodyHtml = m.rows
         .map(
           ([k, v]) =>
-            `<div class="ss-mrow"><span class="ss-mk">${k}</span><span class="ss-mv">${v}</span></div>`
+            `<div class="ss-mrow"><span class="ss-mk">${esc(k)}</span><span class="ss-mv">${esc(v)}</span></div>`
         )
         .join("");
     } else if (m.kind === "snooze") {
-      title = `Snooze ${m.name}`;
+      title = `Snooze ${esc(m.name)}`;
       bodyHtml =
         `<div class="ss-msub">Mute this entity so it drops off the list for a while.</div>` +
         `<div class="ss-mgrid">` +
@@ -726,31 +777,31 @@ class SensorSentinelCard extends HTMLElement {
         `</div>`;
       actionsHtml = `<button class="ss-mbtn" data-mact="close">Cancel</button>`;
     } else if (m.kind === "exclude") {
-      title = `Exclude ${m.name}?`;
+      title = `Exclude ${esc(m.name)}?`;
       bodyHtml = `<div class="ss-msub">Adds a Sentinel rule so this entity is never reported as down. It stays fully active in Home Assistant — undo anytime in the integration's <b>Configure</b> dialog. (To remove it from Home Assistant entirely, use <b>Disable</b> instead.)</div>`;
       actionsHtml =
         `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
         `<button class="ss-mbtn ss-mprimary" data-mact="exclude">Exclude</button>`;
     } else if (m.kind === "disable") {
-      title = `Disable ${m.name}?`;
+      title = `Disable ${esc(m.name)}?`;
       bodyHtml = `<div class="ss-msub">This disables the entity in Home Assistant — it is removed until you re-enable it in <b>Settings → Devices &amp; Services → Entities</b> (needs a reload). This is different from <b>Exclude</b>, which only hides it from Sensor Sentinel.</div>`;
       actionsHtml =
         `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
         `<button class="ss-mbtn ss-mdanger" data-mact="disable">Disable</button>`;
     } else if (m.kind === "gexclude") {
-      title = `Exclude all in ${m.label}?`;
+      title = `Exclude all in ${esc(m.label)}?`;
       bodyHtml = `<div class="ss-msub">Adds Sentinel exclusion rules for all <b>${m.count}</b> currently-listed ${m.count === 1 ? "entity" : "entities"} in this group. They stay fully active in Home Assistant — undo in the integration's <b>Configure</b> dialog.</div>`;
       actionsHtml =
         `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
         `<button class="ss-mbtn ss-mprimary" data-mact="gexclude">Exclude ${m.count}</button>`;
     } else if (m.kind === "reload") {
-      title = `Reload ${m.label}?`;
+      title = `Reload ${esc(m.label)}?`;
       bodyHtml = `<div class="ss-msub">Reloads this integration's config entry. Its entities briefly go unavailable and come back — often the quickest fix when a whole integration has gone dark. Needs an admin user.</div>`;
       actionsHtml =
         `<button class="ss-mbtn" data-mact="close">Cancel</button>` +
         `<button class="ss-mbtn ss-mprimary" data-mact="reload">Reload</button>`;
     } else if (m.kind === "gsnooze") {
-      title = `Snooze all in ${m.label}`;
+      title = `Snooze all in ${esc(m.label)}`;
       bodyHtml =
         `<div class="ss-msub">Mute all <b>${m.count}</b> currently-listed ${m.count === 1 ? "entity" : "entities"} in this group for…</div>` +
         `<div class="ss-mgrid">` +
@@ -887,13 +938,22 @@ class SensorSentinelCard extends HTMLElement {
  */
 class SensorSentinelCardEditor extends HTMLElement {
   setConfig(config) {
-    this._config = { ...CONFIG_DEFAULTS, ...config };
+    this._config = { ...CONFIG_DEFAULTS, ...(config || {}) };
     this._render();
   }
 
   set hass(hass) {
     this._hass = hass;
     this._render();
+  }
+
+  connectedCallback() {
+    // Same pre-upgrade property re-routing as the card (see there for why).
+    if (Object.prototype.hasOwnProperty.call(this, "hass")) {
+      const v = this.hass;
+      delete this.hass;
+      this.hass = v;
+    }
   }
 
   _render() {
@@ -948,5 +1008,5 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
     preview: true,
     documentationURL: "https://github.com/petergCA/sensor-sentinel",
   });
-  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.3 ", "background:#0288d1;color:#fff", "");
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.4 ", "background:#0288d1;color:#fff", "");
 }
