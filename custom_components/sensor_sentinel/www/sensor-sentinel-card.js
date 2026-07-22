@@ -1008,5 +1008,67 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
     preview: true,
     documentationURL: "https://github.com/petergCA/sensor-sentinel",
   });
-  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.4 ", "background:#0288d1;color:#fff", "");
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.5 ", "background:#0288d1;color:#fff", "");
+
+  // Self-heal stuck "Configuration error" cards. When Lovelace builds a view
+  // in a race window (module still loading, a transient throw, polyfill
+  // timing), hui-card swaps in a hui-error-card — and for several of those
+  // paths nothing ever rebuilds it, so the red card sticks until a manual
+  // refresh. Once this module IS loaded the card is known-good, so: sweep the
+  // (shadow-piercing) DOM a few times after load and whenever the tab becomes
+  // visible, and for any error card that belongs to us, record its message to
+  // localStorage (finally capturing the root cause for diagnosis) and fire
+  // HA's ll-rebuild so the wrapper rebuilds the real card in place.
+  const rebuiltNodes = new WeakSet();
+  let rebuildBudget = 10; // hard cap: never thrash if a card genuinely can't build
+
+  const findStuckErrorCards = () => {
+    const found = [];
+    const walk = (root) => {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.localName === "hui-error-card") {
+          const cfg = el._config || {};
+          const blob = `${JSON.stringify(cfg.origConfig || cfg) || ""} ${cfg.error || ""}`;
+          if (blob.includes("sensor-sentinel-card")) found.push(el);
+        }
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    };
+    try {
+      walk(document);
+    } catch (_) {
+      /* never break the page over diagnostics */
+    }
+    return found;
+  };
+
+  const healStuckErrorCards = () => {
+    for (const el of findStuckErrorCards()) {
+      if (rebuiltNodes.has(el) || rebuildBudget <= 0) continue;
+      rebuiltNodes.add(el);
+      rebuildBudget--;
+      const cfg = el._config || {};
+      const message = String(
+        cfg.error || (el.shadowRoot?.textContent || el.textContent || "").trim()
+      ).slice(0, 300);
+      try {
+        const key = "sensor-sentinel-error-log";
+        const log = JSON.parse(window.localStorage.getItem(key) || "[]");
+        log.push({ when: new Date().toISOString(), message });
+        window.localStorage.setItem(key, JSON.stringify(log.slice(-20)));
+      } catch (_) {
+        /* private mode / quota — logging is best-effort */
+      }
+      console.warn("sensor-sentinel: rebuilding stuck error card —", message);
+      el.dispatchEvent(new Event("ll-rebuild", { bubbles: true, composed: true }));
+    }
+  };
+
+  // Lovelace may not have painted yet when this module evaluates; sweep on a
+  // tapering schedule, and again when a background tab (which defers view
+  // rendering) becomes visible.
+  for (const delay of [1000, 3000, 8000, 20000]) setTimeout(healStuckErrorCards, delay);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) setTimeout(healStuckErrorCards, 1000);
+  });
 }
