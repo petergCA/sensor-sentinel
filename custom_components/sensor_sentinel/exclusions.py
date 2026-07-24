@@ -80,11 +80,17 @@ class ExclusionEngine:
     def unsnooze(self, entity_id: str) -> None:
         self._snoozed.pop(entity_id, None)
 
-    def prune_snoozes(self, now_ts: float) -> None:
-        """Drop expired snoozes (called opportunistically, not on the hot path)."""
+    def prune_snoozes(self, now_ts: float) -> list[str]:
+        """Drop expired snoozes and return the affected entity_ids.
+
+        Callers must re-evaluate the returned entities: a continuously-bad
+        entity emits no state_changed events, so nothing else will notice it
+        again once its snooze lapses.
+        """
         expired = [eid for eid, until in self._snoozed.items() if until <= now_ts]
         for eid in expired:
             del self._snoozed[eid]
+        return expired
 
     def snapshot_snoozes(self) -> dict[str, float]:
         """Export the active snooze map (for persistence)."""

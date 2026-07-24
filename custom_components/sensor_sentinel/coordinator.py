@@ -194,7 +194,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
     def async_unsnooze(self, entity_id: str) -> None:
         self.exclusions.unsnooze(entity_id)
-        # Re-evaluate just this entity; no fleet scan.
+        self._reevaluate(entity_id)
+
+    def _reevaluate(self, entity_id: str) -> None:
+        """Re-check a single entity's current state; no fleet scan."""
         state = self.hass.states.get(entity_id)
         if (
             state is not None
@@ -608,6 +611,17 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
     @callback
     def _housekeeping(self, _now=None) -> None:
+        # Wake entities whose snooze has lapsed. A continuously-bad entity
+        # fires no state_changed events, so this tick is the only thing that
+        # can surface it again after its snooze deadline passes. Must run
+        # before the empty-set early-return: snoozing removes entities from
+        # the down-set, so "everything snoozed" is exactly the empty case.
+        expired = self.exclusions.prune_snoozes(time.time())
+        for entity_id in expired:
+            self._reevaluate(entity_id)
+        if expired:
+            self._schedule_write()
+
         if not self._down:
             return
         now_iso_dt = dt_util.utcnow()

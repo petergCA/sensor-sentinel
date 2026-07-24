@@ -30,6 +30,7 @@ exclude, disable, and Z-Wave ping.
 - [Services](#services)
 - [How it stays fast](#how-it-stays-fast)
 - [Good to know](#good-to-know)
+- [Troubleshooting the card](#troubleshooting-the-card)
 - [License](#license)
 
 ---
@@ -209,6 +210,39 @@ inline help text.
   clears them from HA for good.
 - **Count looks high right after a restart?** That's the startup warmup settling
   — boot-time transients clear within the warmup window.
+
+## Troubleshooting the card
+
+The card is served by the integration itself at
+`/sensor_sentinel/sensor-sentinel-card.js?v=<version>` and auto-loaded on every
+dashboard (via the frontend's extra-module mechanism, not the Lovelace
+resources list — so you won't see it under **Settings → Dashboards →
+Resources**; that's normal).
+
+If a dashboard shows a red **"Configuration error"** where the card should be:
+
+1. **Hard-refresh the browser / clear the frontend cache.** On the HA mobile
+   app: **Settings → Companion app → Debugging → Reset frontend cache**. Stale
+   cached copies are by far the most common cause.
+2. **Verify the module is being served.** Open
+   `http://<your-ha>:8123/sensor_sentinel/sensor-sentinel-card.js` — you should
+   get JavaScript, not a 404. A 404 means the integration didn't finish loading;
+   check **Settings → System → Logs** for `sensor_sentinel` errors.
+3. **Check the card's own error log.** The card records render failures to the
+   browser's localStorage (they don't appear in HA's backend logs). In the
+   browser console on the affected device, run:
+
+   ```js
+   JSON.parse(localStorage.getItem("sensor-sentinel-error-log") || "[]")
+   ```
+
+   and include the output when filing an issue.
+4. **Manual fallback registration.** If a device stubbornly refuses to load the
+   module automatically, add it explicitly under **Settings → Dashboards → ⋮ →
+   Resources → Add resource** with URL
+   `/sensor_sentinel/sensor-sentinel-card.js` and type **JavaScript module**.
+   (Harmless alongside the auto-registration — the card guards against being
+   defined twice.)
 
 ## Status
 

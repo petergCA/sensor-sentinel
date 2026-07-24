@@ -552,16 +552,24 @@ class SensorSentinelCard extends HTMLElement {
       return this._groupLabel(a).localeCompare(this._groupLabel(b));
     });
 
+    // Stale incidents are dropped from the count sensor but must stay
+    // visible (README promise) — so the empty state keys off the rendered
+    // rows, never the count alone. With the full websocket list, stale rows
+    // render with their badge; without it (the attribute sample excludes
+    // stale) we at least say they exist instead of claiming all clear.
+    const staleCount = Number(attrs.stale_count) || 0;
     let body;
-    if (count === 0) {
-      body = `<div class="ss-empty">✅<span class="ss-cleartext">Everything's up — nothing down right now.</span></div>`;
-    } else if (incidents.length === 0) {
-      body = `<div class="ss-empty">No incidents match “${esc(this._filter)}”.</div>`;
-    } else {
+    if (incidents.length > 0) {
       body = orderedKeys.map((k) => this._renderGroup(k, groups[k])).join("");
       if (!usingFull && attrs.truncated) {
         body += `<div class="ss-note">Showing a sample of ${incidents.length}; the full list couldn't be fetched. Check the integration is up to date.</div>`;
       }
+    } else if (this._filter) {
+      body = `<div class="ss-empty">No incidents match “${esc(this._filter)}”.</div>`;
+    } else if (staleCount > 0) {
+      body = `<div class="ss-empty">✅<span class="ss-cleartext">No active incidents — ${staleCount} stale ${staleCount === 1 ? "incident" : "incidents"} retired from the count.</span></div>`;
+    } else {
+      body = `<div class="ss-empty">✅<span class="ss-cleartext">Everything's up — nothing down right now.</span></div>`;
     }
 
     const filterVal = esc(this._filter || "");
@@ -577,12 +585,12 @@ class SensorSentinelCard extends HTMLElement {
         <div class="ss-count ${count ? "bad" : "ok"}">${count}</div>
         <div class="ss-headmeta">
           <div class="ss-title">Sensor Sentinel</div>
-          <div class="ss-sub">${count ? "entities down and/or unavailable" : "all clear"}</div>
+          <div class="ss-sub">${count ? "entities down and/or unavailable" : staleCount > 0 ? `all active clear · ${staleCount} stale` : "all clear"}</div>
         </div>
         ${toggleAllBtn}
       </div>
       ${this._sparklineSVG()}
-      ${count ? `<input class="ss-search" type="search" placeholder="Filter by name, area, integration…" value="${filterVal}" />` : ""}
+      ${count || incidents.length || this._filter ? `<input class="ss-search" type="search" placeholder="Filter by name, area, integration…" value="${filterVal}" />` : ""}
       <div class="ss-list">${body}</div>
     `) + this._renderModal();
     this._bind();
