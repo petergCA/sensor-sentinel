@@ -182,7 +182,7 @@ inline help text.
 
 | Service | Description |
 | --- | --- |
-| `sensor_sentinel.snooze` | Mute an entity for N minutes. |
+| `sensor_sentinel.snooze` | Mute an entity for N minutes. If it's still down when the snooze lapses, it resurfaces on its own (within the ~5-minute housekeeping tick). |
 | `sensor_sentinel.unsnooze` | Clear a snooze. |
 | `sensor_sentinel.exclude` | Add a permanent explicit-entity exclusion. |
 | `sensor_sentinel.explain` | Return why an entity is flagged / excluded (service response). |
