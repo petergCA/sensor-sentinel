@@ -984,28 +984,45 @@ class SensorSentinelCardEditor extends HTMLElement {
   }
 }
 
-// Guard every registration. Home Assistant frontends that load the
+// Registration. Home Assistant frontends that load the
 // scoped-custom-element-registry polyfill (tabbed-card, layout-card, …) patch
-// customElements.define globally, and the card module can be evaluated more
-// than once (polyfill timing, frontend re-init, or the auto-loaded copy racing
-// a cached one). An unguarded define() then THROWS "the name … has already been
-// used with this registry"; if that throws on the editor before the card is
-// registered, the card element never finishes defining and Lovelace paints
-// "Configuration Error" until a hard refresh. Registering only when absent — and
-// pushing to customCards only once — makes a repeat evaluation a harmless no-op.
-const _ssDefine = (name, cls) => {
-  if (!customElements.get(name)) {
+// customElements globally, and around that install a define() can THROW while
+// get() still returns undefined — i.e. the element is genuinely NOT defined
+// and never will be unless the define is retried. (Captured live 2026-07-25:
+// Lovelace kept rebuilding the card into "Custom element doesn't exist:
+// sensor-sentinel-card" for 20+ seconds while this module was demonstrably
+// running — the initial define() had thrown and been swallowed as if benign.)
+// So: treat a define() throw as retryable with backoff until get() confirms
+// registration, and never assume a throw means "someone else defined it".
+const _SS_ELEMENTS = [
+  ["sensor-sentinel-card-editor", SensorSentinelCardEditor],
+  ["sensor-sentinel-card", SensorSentinelCard],
+];
+
+const _ssEnsureDefined = (noisy) => {
+  let ok = true;
+  for (const [name, cls] of _SS_ELEMENTS) {
+    if (customElements.get(name)) continue;
     try {
       customElements.define(name, cls);
     } catch (e) {
-      // Another evaluation won the race between get() and define(); that copy
-      // is already serving the element, so this is safe to ignore.
-      console.debug(`sensor-sentinel: ${name} already defined`, e);
+      ok = false;
+      if (noisy) console.warn(`sensor-sentinel: define(${name}) failed — will retry`, e);
     }
   }
+  return ok;
 };
-_ssDefine("sensor-sentinel-card-editor", SensorSentinelCardEditor);
-_ssDefine("sensor-sentinel-card", SensorSentinelCard);
+
+let _ssDefineTries = 0;
+const _ssDefineLoop = () => {
+  if (_ssEnsureDefined(_ssDefineTries > 0)) return;
+  if (++_ssDefineTries > 8) {
+    console.error("sensor-sentinel: giving up defining elements after repeated define() failures");
+    return;
+  }
+  setTimeout(_ssDefineLoop, 250 * _ssDefineTries);
+};
+_ssDefineLoop();
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
@@ -1016,7 +1033,7 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
     preview: true,
     documentationURL: "https://github.com/petergCA/sensor-sentinel",
   });
-  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.5 ", "background:#0288d1;color:#fff", "");
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.7 ", "background:#0288d1;color:#fff", "");
 
   // Self-heal stuck "Configuration error" cards. When Lovelace builds a view
   // in a race window (module still loading, a transient throw, polyfill
@@ -1036,7 +1053,13 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
       for (const el of root.querySelectorAll("*")) {
         if (el.localName === "hui-error-card") {
           const cfg = el._config || {};
-          const blob = `${JSON.stringify(cfg.origConfig || cfg) || ""} ${cfg.error || ""}`;
+          // hui-card renders in light DOM, so the error card's parent IS the
+          // hui-card wrapper holding the original card config — the reliable
+          // ownership signal (the error config itself may be just
+          // {type:"error"} with no message at all on some paths).
+          const wrapperType =
+            el.parentElement?.localName === "hui-card" ? el.parentElement.config?.type : null;
+          const blob = `${wrapperType || ""} ${JSON.stringify(cfg.origConfig || cfg) || ""} ${cfg.error || ""}`;
           if (blob.includes("sensor-sentinel-card")) found.push(el);
         }
         if (el.shadowRoot) walk(el.shadowRoot);
@@ -1051,23 +1074,29 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
   };
 
   const healStuckErrorCards = () => {
-    for (const el of findStuckErrorCards()) {
+    const stuck = findStuckErrorCards();
+    if (!stuck.length) return;
+    // A rebuild re-runs customElements.get() — pointless while the tag is
+    // undefined (the polyfill-thrown-define case), so repair that first.
+    const definedBefore = !!customElements.get("sensor-sentinel-card");
+    if (!definedBefore) _ssEnsureDefined(true);
+    for (const el of stuck) {
       if (rebuiltNodes.has(el) || rebuildBudget <= 0) continue;
       rebuiltNodes.add(el);
       rebuildBudget--;
       const cfg = el._config || {};
       const message = String(
-        cfg.error || (el.shadowRoot?.textContent || el.textContent || "").trim()
+        cfg.error || cfg.message || (el.shadowRoot?.textContent || el.textContent || "").trim()
       ).slice(0, 300);
       try {
         const key = "sensor-sentinel-error-log";
         const log = JSON.parse(window.localStorage.getItem(key) || "[]");
-        log.push({ when: new Date().toISOString(), message });
+        log.push({ when: new Date().toISOString(), message, defined: definedBefore });
         window.localStorage.setItem(key, JSON.stringify(log.slice(-20)));
       } catch (_) {
         /* private mode / quota — logging is best-effort */
       }
-      console.warn("sensor-sentinel: rebuilding stuck error card —", message);
+      console.warn("sensor-sentinel: rebuilding stuck error card —", message, "| tag was defined:", definedBefore);
       el.dispatchEvent(new Event("ll-rebuild", { bubbles: true, composed: true }));
     }
   };
@@ -1075,7 +1104,7 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
   // Lovelace may not have painted yet when this module evaluates; sweep on a
   // tapering schedule, and again when a background tab (which defers view
   // rendering) becomes visible.
-  for (const delay of [1000, 3000, 8000, 20000]) setTimeout(healStuckErrorCards, delay);
+  for (const delay of [300, 1000, 3000, 8000, 20000, 45000]) setTimeout(healStuckErrorCards, delay);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) setTimeout(healStuckErrorCards, 1000);
   });
