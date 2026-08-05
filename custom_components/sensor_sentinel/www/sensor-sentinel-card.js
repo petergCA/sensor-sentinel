@@ -114,14 +114,21 @@ class SensorSentinelCard extends HTMLElement {
     // here is fatal: hui-card catches it and swaps in the red "Configuration
     // error" card until the next rebuild. Just hold the hass and wait.
     if (!this._config) return;
+    this._maybeFetchHistory();
+    // HA hands every card a new hass on EVERY state change anywhere in the
+    // instance — thousands of times an hour on a big system. Nothing we draw
+    // depends on those other entities, so re-rendering for them was pure DOM
+    // churn that also ate clicks (see _render's press guard). Repaint only when
+    // our own sensor actually moved.
     const st = this._stateObj();
     const stamp = st ? st.last_updated : null;
-    if (stamp && stamp !== this._stamp) {
+    if (stamp !== this._stamp) {
       this._stamp = stamp;
-      this._fetchFull();
+      if (stamp) this._fetchFull();
+      this._render();
+    } else if (!this._everRendered) {
+      this._render();
     }
-    this._maybeFetchHistory();
-    this._render();
   }
 
   connectedCallback() {
@@ -133,7 +140,54 @@ class SensorSentinelCard extends HTMLElement {
       delete this.hass;
       this.hass = v;
     }
+
+    // -- Press guard ---------------------------------------------------------
+    // A click is only delivered if press and release land on the SAME element.
+    // _render() replaces the card's whole innerHTML, so an incident update that
+    // arrived between the two silently destroyed the button under the cursor
+    // and the click was never dispatched — the "I have to click Confirm twice"
+    // bug. Hold repaints for the duration of a press and flush afterwards.
+    this._onPressStart = () => {
+      this._pressing = true;
+    };
+    this._onPressEnd = () => {
+      if (!this._pressing) return;
+      this._pressing = false;
+      // Defer: pointerup is followed synchronously by mouseup and then click.
+      // Repainting here would destroy the button before its click dispatches
+      // and reintroduce the very bug this guard exists to fix.
+      setTimeout(() => {
+        if (this._renderPending && !this._pressing) {
+          this._renderPending = false;
+          this._render();
+        }
+      }, 0);
+    };
+    this.addEventListener("pointerdown", this._onPressStart);
+    // On window, not the card: releasing with the cursor dragged off the button
+    // still has to clear the guard, or the card would stop repainting for good.
+    window.addEventListener("pointerup", this._onPressEnd);
+    window.addEventListener("pointercancel", this._onPressEnd);
+
+    // Relative ages ("4m", "2h") used to stay fresh only because unrelated
+    // state changes kept repainting the card. Now that they don't, tick — but
+    // not over an open dialog, a hidden tab, or someone typing in the filter
+    // box, since a repaint would drop their caret.
+    this._ageTick = setInterval(() => {
+      if (this._modal || !this._hass || !this._config || document.hidden) return;
+      const active = document.activeElement;
+      if (active && this.contains(active) && active.classList?.contains("ss-search")) return;
+      this._render();
+    }, 30000);
+
     if (this._hass && this._config) this._render();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("pointerup", this._onPressEnd);
+    window.removeEventListener("pointercancel", this._onPressEnd);
+    clearInterval(this._ageTick);
+    this._pressing = false;
   }
 
   getCardSize() {
@@ -546,6 +600,13 @@ class SensorSentinelCard extends HTMLElement {
   }
 
   _render() {
+    // Never rebuild the DOM out from under a press in flight — the browser
+    // would drop the click. The release flushes whatever we deferred.
+    if (this._pressing) {
+      this._renderPending = true;
+      return;
+    }
+    this._renderPending = false;
     // The initial render runs synchronously inside hui-card's hass setter,
     // which try/catches it — one data-dependent throw would paint the red
     // "Configuration error" card. Fail soft inside the card instead.
@@ -565,6 +626,9 @@ class SensorSentinelCard extends HTMLElement {
 
   _renderInner() {
     if (!this._hass || !this._config) return;
+    // Past this point every path paints something, so the hass setter can stop
+    // forcing a first render.
+    this._everRendered = true;
     const st = this._stateObj();
     if (!st) {
       this.innerHTML = this._wrap(
