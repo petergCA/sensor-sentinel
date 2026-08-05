@@ -424,11 +424,25 @@ class SensorSentinelCard extends HTMLElement {
 
   // -- Collapse persistence ------------------------------------------------
 
+  // Group keys are namespaced per group_by mode: "unknown" (an integration we
+  // can't resolve) and "unassigned" (no area) are different groups, and an
+  // override in one mode must not leak into the other.
   _collapseKey() {
-    return `sensor-sentinel-collapsed:${this._config?.entity || DEFAULT_ENTITY}`;
+    const entity = this._config?.entity || DEFAULT_ENTITY;
+    return `sensor-sentinel-collapsed:${entity}:${this._config?.group_by || "integration"}`;
   }
 
   _loadCollapsed() {
+    // Drop the pre-0.7.8 un-namespaced blob. It's the store that accumulated
+    // the stale `false` entries this key change fixes, so there is nothing
+    // worth migrating out of it.
+    try {
+      window.localStorage.removeItem(
+        `sensor-sentinel-collapsed:${this._config?.entity || DEFAULT_ENTITY}`
+      );
+    } catch (e) {
+      /* ignore private-mode errors */
+    }
     try {
       return JSON.parse(window.localStorage.getItem(this._collapseKey()) || "{}") || {};
     } catch (e) {
@@ -442,6 +456,35 @@ class SensorSentinelCard extends HTMLElement {
     } catch (e) {
       /* ignore quota/private-mode errors */
     }
+  }
+
+  // `_collapsed` only ever holds *deviations* from collapse_by_default: storing
+  // a value that already matches the default would pin the group to today's
+  // setting and silently ignore a later change in the card editor. Persists as
+  // it writes — every caller wants the change to survive a reload, and a
+  // mutate-then-forget-to-save pair is a bug waiting to happen.
+  _setCollapsed(key, collapsed) {
+    if (collapsed === !!this._config.collapse_by_default) delete this._collapsed[key];
+    else this._collapsed[key] = collapsed;
+    this._saveCollapsed();
+  }
+
+  // A manual expand is a triage gesture for the incident in front of you, not a
+  // permanent setting. Once a group has no incidents left its override is dead
+  // weight — and keeping it is exactly what made the next entity to go down
+  // reappear expanded despite collapse_by_default. Forget groups that are gone
+  // so they come back at the configured default.
+  _pruneCollapsed(liveKeys) {
+    const live = new Set(liveKeys);
+    const def = !!this._config.collapse_by_default;
+    let changed = false;
+    for (const k of Object.keys(this._collapsed)) {
+      if (!live.has(k) || this._collapsed[k] === def) {
+        delete this._collapsed[k];
+        changed = true;
+      }
+    }
+    if (changed) this._saveCollapsed();
   }
 
   // -- Render --------------------------------------------------------------
@@ -536,6 +579,11 @@ class SensorSentinelCard extends HTMLElement {
     const all = usingFull ? this._incidents : attrs.entities || [];
     const incidents = all.filter((inc) => this._matchesFilter(inc));
 
+    // Prune against the unfiltered list, and only when the websocket list is in
+    // hand: the attribute fallback is a sample that also omits stale rows, so
+    // pruning from it would forget groups that are still on screen.
+    if (usingFull) this._pruneCollapsed(all.map((inc) => this._groupKey(inc)));
+
     // Group.
     const groups = {};
     for (const inc of incidents) {
@@ -617,10 +665,7 @@ class SensorSentinelCard extends HTMLElement {
     const keys = this._currentGroupKeys();
     // If anything is expanded, collapse everything; otherwise expand everything.
     const collapse = keys.some((k) => !this._isCollapsed(k));
-    keys.forEach((k) => {
-      this._collapsed[k] = collapse;
-    });
-    this._saveCollapsed();
+    keys.forEach((k) => this._setCollapsed(k, collapse));
     this._render();
   }
 
@@ -710,8 +755,7 @@ class SensorSentinelCard extends HTMLElement {
     this.querySelectorAll("[data-toggle]").forEach((el) =>
       el.addEventListener("click", () => {
         const k = decodeURIComponent(el.getAttribute("data-toggle"));
-        this._collapsed[k] = !this._isCollapsed(k);
-        this._saveCollapsed();
+        this._setCollapsed(k, !this._isCollapsed(k));
         this._render();
       })
     );
@@ -1033,7 +1077,7 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
     preview: true,
     documentationURL: "https://github.com/petergCA/sensor-sentinel",
   });
-  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.7 ", "background:#0288d1;color:#fff", "");
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.8 ", "background:#0288d1;color:#fff", "");
 
   // Self-heal stuck "Configuration error" cards. When Lovelace builds a view
   // in a race window (module still loading, a transient throw, polyfill
