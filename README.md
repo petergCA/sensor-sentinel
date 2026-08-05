@@ -111,8 +111,10 @@ above](#sensor-sentinel)):
 **Header**
 
 - **Count** — number of entities currently down.
-- **Expand all / Collapse all** — toggle every group at once (state is
-  remembered per dashboard).
+- **Expand all / Collapse all** — toggle every group at once. Expanding or
+  collapsing a group sticks across reloads for as long as that group still has
+  incidents; once it clears, the group goes back to whatever **Collapse groups
+  by default** is set to, so a fresh incident doesn't reappear pre-expanded.
 - **Search** — filter the list by name, area, or integration.
 - **Trend sparkline** *(optional)* — the down-count over the last N hours, from
   recorder history.
