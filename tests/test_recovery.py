@@ -140,6 +140,18 @@ async def _goes_down(hass, entity_id: str) -> None:
     await hass.async_block_till_done()
 
 
+async def _quiesce(hass, coordinator) -> None:
+    """Shut down cleanly.
+
+    Incident writes are debounced through the Store, so tearing down straight
+    after a state change leaves that timer pending and HA's test harness fails
+    the test for it. Let the clock run out first.
+    """
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=30))
+    await hass.async_block_till_done()
+    await coordinator.async_shutdown()
+
+
 async def _reload_cycle(hass, coordinator, entity_ids, returns_healthy) -> None:
     """Simulate what async_reload actually does to an entry's entities.
 
@@ -182,7 +194,7 @@ async def test_failed_reload_does_not_refund_its_own_budget(hass, reloads, clock
 
     assert len(reloads) == RECOVERY_MAX_ATTEMPTS
     assert "switch.portable" in coordinator._recovery_exhausted
-    await coordinator.async_shutdown()
+    await _quiesce(hass, coordinator)
 
 
 async def test_reload_that_works_is_refunded_and_can_run_again(hass, reloads, clock):
@@ -207,7 +219,7 @@ async def test_reload_that_works_is_refunded_and_can_run_again(hass, reloads, cl
 
     assert len(reloads) == 4, "a reload that works should never be given up on"
     assert not coordinator._recovery_exhausted
-    await coordinator.async_shutdown()
+    await _quiesce(hass, coordinator)
 
 
 async def test_removal_is_not_counted_as_a_recovery(hass):
@@ -221,7 +233,7 @@ async def test_removal_is_not_counted_as_a_recovery(hass):
 
     assert "switch.portable" not in coordinator._down
     assert coordinator._recovered_today == before
-    await coordinator.async_shutdown()
+    await _quiesce(hass, coordinator)
 
 
 async def test_genuine_recovery_still_counts(hass):
@@ -235,7 +247,7 @@ async def test_genuine_recovery_still_counts(hass):
 
     assert "switch.lamp" not in coordinator._down
     assert coordinator._recovered_today == before + 1
-    await coordinator.async_shutdown()
+    await _quiesce(hass, coordinator)
 
 
 async def test_shared_entry_gets_a_smaller_budget(hass, reloads, clock, monkeypatch):
@@ -260,4 +272,4 @@ async def test_shared_entry_gets_a_smaller_budget(hass, reloads, clock, monkeypa
 
     assert len(reloads) == RECOVERY_MAX_ATTEMPTS_SHARED
     assert RECOVERY_MAX_ATTEMPTS_SHARED < RECOVERY_MAX_ATTEMPTS
-    await coordinator.async_shutdown()
+    await _quiesce(hass, coordinator)
