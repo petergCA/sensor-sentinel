@@ -85,7 +85,14 @@ DEFAULT_AUTO_RECOVERY = False
 # Wait this long after an entity goes down before attempting recovery.
 DEFAULT_RECOVERY_DELAY = 300
 # Guardrails: at most this many attempts per entity, spaced by the cooldown.
+# The budget is spent on failure and refunded the moment the entity is seen
+# healthy again, so an action that actually works can repeat indefinitely.
 RECOVERY_MAX_ATTEMPTS = 3
+# Reloading a config entry takes down every entity it owns. When the entry
+# still has working entities, that collateral is real and the odds are worse
+# (the rest of the integration is plainly fine), so spend far less before
+# giving up. A reload that fixes things needs exactly one attempt anyway.
+RECOVERY_MAX_ATTEMPTS_SHARED = 1
 RECOVERY_COOLDOWN = 900
 # How often the periodic housekeeping tick runs (re-alert / stale / recovery).
 HOUSEKEEPING_INTERVAL = 300

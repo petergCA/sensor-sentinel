@@ -1141,7 +1141,7 @@ if (!window.customCards.some((c) => c.type === "sensor-sentinel-card")) {
     preview: true,
     documentationURL: "https://github.com/petergCA/sensor-sentinel",
   });
-  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.8 ", "background:#0288d1;color:#fff", "");
+  console.info("%c SENSOR-SENTINEL-CARD %c v0.7.9 ", "background:#0288d1;color:#fff", "");
 
   // Self-heal stuck "Configuration error" cards. When Lovelace builds a view
   // in a race window (module still loading, a transient throw, polyfill

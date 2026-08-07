@@ -62,6 +62,7 @@ from .const import (
     HOUSEKEEPING_INTERVAL,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_ATTEMPTS,
+    RECOVERY_MAX_ATTEMPTS_SHARED,
     STATE_WRITE_DEBOUNCE,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -144,6 +145,9 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._realerted_at: dict[str, float] = {}  # entity_id -> monotonic
         self._recovery_attempts: dict[str, int] = {}
         self._recovery_last: dict[str, float] = {}  # entity_id -> monotonic
+        self._recovery_exhausted: set[str] = set()  # logged "giving up" already
+        # config_entry_id -> "owns something that works", per housekeeping pass.
+        self._entry_health_cache: dict[str, bool] = {}
 
         self.exclusions = ExclusionEngine(dict(entry.options), self._platform_of)
         self._load_tunables()
@@ -446,6 +450,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         entry = er.async_get(self.hass).async_get(entity_id)
         if entry is None or entry.disabled_by is not None:
             self._clear_tracking(entity_id)
+            # Deleted or disabled for real, unlike the transient state-machine
+            # removal a reload causes — so this is where the recovery budget is
+            # genuinely dead and should not be left behind.
+            self._forget_recovery(entity_id)
 
     def _is_registry_disabled(self, entity_id: str) -> bool:
         entry = er.async_get(self.hass).async_get(entity_id)
@@ -505,6 +513,25 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
         # The overwhelmingly common case: a healthy entity changing value.
         if not is_bad and not tracked:
+            # ...with one exception. A recovery action that reloaded the owning
+            # config entry pulled this entity out of the tracked set on the way
+            # past (see the removal branch below), so its return to health
+            # arrives here, untracked. That is the recovery having WORKED —
+            # refund the budget so an action that fixes things can keep doing
+            # so. The dict is empty unless auto-recovery is on and has fired,
+            # which keeps this to one truthiness check on the hot path.
+            if self._recovery_attempts and new_state is not None:
+                self._forget_recovery(entity_id)
+            return
+
+        if new_state is None:
+            # Gone from the state machine, not recovered — nearly always a
+            # config entry unloading, and frequently OUR OWN recovery reload.
+            # Drop it from the live set, but do NOT bank a recovery and do NOT
+            # clear the recovery budget: that reset is what let a reload
+            # resurrect the very counter meant to stop it reloading again, and
+            # it inflated recovered_today with entities that never came back.
+            self._clear_tracking(entity_id)
             return
 
         if is_bad and self.exclusions.is_excluded(entity_id, time.time()):
@@ -552,14 +579,19 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         incident = self._down.pop(entity_id)
         self._recovered_at[entity_id] = time.monotonic()
         self._realerted_at.pop(entity_id, None)
-        self._recovery_attempts.pop(entity_id, None)
-        self._recovery_last.pop(entity_id, None)
+        self._forget_recovery(entity_id)
         self._note_recovery()
         self.hass.bus.async_fire(
             EVENT_ENTITY_RECOVERED, {"entity_id": entity_id, "name": incident.name}
         )
         _LOGGER.debug("Recovered: %s", entity_id)
         self._schedule_write()
+
+    def _forget_recovery(self, entity_id: str) -> None:
+        """Wipe the recovery budget, re-arming auto-recovery for this entity."""
+        self._recovery_attempts.pop(entity_id, None)
+        self._recovery_last.pop(entity_id, None)
+        self._recovery_exhausted.discard(entity_id)
 
     def _clear_tracking(self, entity_id: str) -> None:
         cancel = self._pending.pop(entity_id, None)
@@ -624,6 +656,8 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
         if not self._down:
             return
+        # Entry health is only stable within a single pass — recompute each tick.
+        self._entry_health_cache.clear()
         now_iso_dt = dt_util.utcnow()
         changed = False
         for entity_id, inc in list(self._down.items()):
@@ -665,17 +699,23 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         return max(0.0, (now_dt - since).total_seconds())
 
     def _maybe_recover(self, entity_id: str) -> None:
+        """Attempt one recovery action, within budget.
+
+        Resolve the action fully BEFORE spending any budget — an attempt we
+        decline to make (no config entry, our own entry, out of budget) must
+        not consume one of the few we get.
+        """
         attempts = self._recovery_attempts.get(entity_id, 0)
-        if attempts >= RECOVERY_MAX_ATTEMPTS:
-            return
         last = self._recovery_last.get(entity_id, 0)
         if attempts and time.monotonic() - last < RECOVERY_COOLDOWN:
             return
-        self._recovery_attempts[entity_id] = attempts + 1
-        self._recovery_last[entity_id] = time.monotonic()
 
         platform = self._platform_of(entity_id)
+
         if platform == "zwave_js":
+            # Pinging a node touches nothing else, so it gets the full budget.
+            if not self._spend_recovery(entity_id, attempts, RECOVERY_MAX_ATTEMPTS):
+                return
             _LOGGER.info("Auto-recovery: pinging Z-Wave node for %s", entity_id)
             self.hass.async_create_task(
                 self.hass.services.async_call(
@@ -690,14 +730,72 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         config_entry_id = entry.config_entry_id if entry else None
         if not config_entry_id or config_entry_id == self.entry.entry_id:
             return
+
+        # A reload restarts every entity the entry owns. If some of them are
+        # working right now, that is real collateral damage inflicted on a
+        # guess — so allow a token attempt and then stop, instead of cycling a
+        # whole integration forever chasing a device that is simply switched
+        # off. When nothing in the entry is working there is nothing to break,
+        # so the full budget applies.
+        shared = self._entry_has_available_entities(config_entry_id, entity_id)
+        budget = RECOVERY_MAX_ATTEMPTS_SHARED if shared else RECOVERY_MAX_ATTEMPTS
+        if not self._spend_recovery(entity_id, attempts, budget):
+            return
         _LOGGER.info(
-            "Auto-recovery: reloading config entry %s for %s",
+            "Auto-recovery: reloading config entry %s for %s (attempt %d/%d%s)",
             config_entry_id,
             entity_id,
+            attempts + 1,
+            budget,
+            ", entry has working entities" if shared else "",
         )
         self.hass.async_create_task(
             self.hass.config_entries.async_reload(config_entry_id)
         )
+
+    def _spend_recovery(self, entity_id: str, attempts: int, budget: int) -> bool:
+        """Consume one attempt, or report that the budget is exhausted.
+
+        Says so exactly once per entity: without this, "gave up" and "never
+        tried" look identical in the log, which is precisely the ambiguity that
+        made a runaway reload loop take a live investigation to spot.
+        """
+        if attempts >= budget:
+            if entity_id not in self._recovery_exhausted:
+                self._recovery_exhausted.add(entity_id)
+                _LOGGER.info(
+                    "Auto-recovery: giving up on %s after %d attempt(s) — it did "
+                    "not come back. No further attempts until it recovers.",
+                    entity_id,
+                    attempts,
+                )
+            return False
+        self._recovery_attempts[entity_id] = attempts + 1
+        self._recovery_last[entity_id] = time.monotonic()
+        return True
+
+    def _entry_has_available_entities(
+        self, config_entry_id: str, exclude: str
+    ) -> bool:
+        """True if the config entry owns any entity that is currently fine.
+
+        Memoised for the duration of one housekeeping pass: several down
+        entities usually share an entry, and this walks the registry.
+        """
+        cached = self._entry_health_cache.get(config_entry_id)
+        if cached is not None:
+            return cached
+        registry = er.async_get(self.hass)
+        healthy = False
+        for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+            if entry.entity_id == exclude or entry.disabled_by is not None:
+                continue
+            state = self.hass.states.get(entry.entity_id)
+            if state is not None and state.state not in self._bad_states:
+                healthy = True
+                break
+        self._entry_health_cache[config_entry_id] = healthy
+        return healthy
 
     # -- Coalesced snapshot publishing --------------------------------------
 

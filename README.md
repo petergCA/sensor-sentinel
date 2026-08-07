@@ -158,10 +158,31 @@ inline help text.
 | **Integration rollup threshold** | 5 | Collapse a burst from one integration into a single rolled-up incident. |
 | **Re-alert if still down after** | 0 (off) | Re-notify after this many hours. |
 | **Auto-retire incidents after** | 0 (off) | Drop incidents down longer than this many days. |
-| **Automatic recovery** | off | Try to heal stuck entities (ping / reload) with guardrails. |
+| **Automatic recovery** | off | Try to heal stuck entities (ping / reload) with guardrails — see below. |
 | **Recovery delay** | 300s | How long down before the first recovery attempt. |
 | **Notification targets** | — | `notify.*` service names (without the `notify.` prefix). |
 | **Persistent notifications** | on | Also create in-HA persistent notifications. |
+
+### How auto-recovery decides to stop
+
+Z-Wave entities get a `zwave_js.ping`, which affects nothing else. Everything
+else falls back to reloading the owning config entry — a blunt instrument, since
+it restarts *every* entity that entry owns.
+
+So attempts are budgeted, and the budget is spent on failure and refunded the
+moment the entity comes back:
+
+- **A reload that works costs nothing.** Integrations that genuinely recover
+  this way keep recovering, indefinitely.
+- **A reload that changes nothing is not retried forever.** Three attempts, or
+  **one** if the entry still has working entities — because reloading nine
+  healthy speakers to chase one that is switched off is not worth a second
+  guess. It resumes if the entity ever recovers on its own.
+
+When the budget runs out Sentinel logs that it is giving up, and why, at `info`.
+An entity that is offline because it is *off* — a battery speaker on its charger,
+a seasonal device — is best handled with an exclusion rule rather than left for
+auto-recovery to discover.
 
 ## Entities
 
