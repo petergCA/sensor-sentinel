@@ -273,3 +273,42 @@ async def test_shared_entry_gets_a_smaller_budget(hass, reloads, clock, monkeypa
     assert len(reloads) == RECOVERY_MAX_ATTEMPTS_SHARED
     assert RECOVERY_MAX_ATTEMPTS_SHARED < RECOVERY_MAX_ATTEMPTS
     await _quiesce(hass, coordinator)
+
+
+async def test_one_reload_per_entry_even_with_many_down_entities(hass, reloads, clock):
+    """The real Sonos shape: one offline speaker owning fourteen entities.
+
+    The field log showed fourteen reload dispatches of the same config entry
+    inside ten milliseconds — the attempt budget is per entity, but a reload
+    is per entry. Every sibling must still SPEND its attempt, or they simply
+    take turns reloading the entry one per tick instead.
+    """
+    owner = _owner_entry(hass)
+    entity_ids = [f"switch.sonos_portable_{i}" for i in range(14)]
+    for entity_id in entity_ids:
+        _owned_entity(hass, entity_id, owner)
+    coordinator = await _coordinator(hass)
+    for entity_id in entity_ids:
+        _age(coordinator, entity_id)
+
+    coordinator._housekeeping()
+    await hass.async_block_till_done()
+
+    assert len(reloads) == 1, "one entry, one reload — not one per entity"
+    assert all(coordinator._recovery_attempts[e] == 1 for e in entity_ids), (
+        "every sibling must record the attempt the shared reload made for it"
+    )
+
+    # A second pass must not reload again: the whole entry is down, so the
+    # budget is 3, but the cooldown holds them all together.
+    clock.advance(RECOVERY_COOLDOWN + 1)
+    await _reload_cycle(
+        hass, coordinator, entity_ids, dict.fromkeys(entity_ids, False)
+    )
+    for entity_id in entity_ids:
+        _age(coordinator, entity_id)
+    coordinator._housekeeping()
+    await hass.async_block_till_done()
+
+    assert len(reloads) == 2, "second pass dispatches exactly one more reload"
+    await _quiesce(hass, coordinator)

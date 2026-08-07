@@ -179,6 +179,11 @@ moment the entity comes back:
   healthy speakers to chase one that is switched off is not worth a second
   guess. It resumes if the entity ever recovers on its own.
 
+A reload is dispatched **once per config entry per pass**, however many of its
+entities are down — one offline device with fourteen entities triggers one
+reload, not fourteen — and every one of those entities still counts the attempt,
+so they can't take turns reloading the entry on later passes.
+
 When the budget runs out Sentinel logs that it is giving up, and why, at `info`.
 An entity that is offline because it is *off* — a battery speaker on its charger,
 a seasonal device — is best handled with an exclusion rule rather than left for

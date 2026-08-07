@@ -148,6 +148,8 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._recovery_exhausted: set[str] = set()  # logged "giving up" already
         # config_entry_id -> "owns something that works", per housekeeping pass.
         self._entry_health_cache: dict[str, bool] = {}
+        # Config entries already reloaded this pass, so siblings don't pile on.
+        self._reloaded_this_pass: set[str] = set()
 
         self.exclusions = ExclusionEngine(dict(entry.options), self._platform_of)
         self._load_tunables()
@@ -656,8 +658,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
         if not self._down:
             return
-        # Entry health is only stable within a single pass — recompute each tick.
+        # Both are per-pass state — entry health is only stable within a tick,
+        # and a reload dispatched last tick shouldn't suppress this one.
         self._entry_health_cache.clear()
+        self._reloaded_this_pass.clear()
         now_iso_dt = dt_util.utcnow()
         changed = False
         for entity_id, inc in list(self._down.items()):
@@ -741,6 +745,23 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         budget = RECOVERY_MAX_ATTEMPTS_SHARED if shared else RECOVERY_MAX_ATTEMPTS
         if not self._spend_recovery(entity_id, attempts, budget):
             return
+
+        # One reload restarts every entity the entry owns, so a single offline
+        # device with fourteen entities must not dispatch fourteen reloads of
+        # the same entry in the same tick. Note the budget above is spent by
+        # *every* sibling that wanted this, not just the one that dispatches:
+        # charging only the dispatcher would leave the others to take turns
+        # reloading the entry one per tick, for hours.
+        if config_entry_id in self._reloaded_this_pass:
+            _LOGGER.debug(
+                "Auto-recovery: %s also wanted config entry %s reloaded; "
+                "already dispatched this pass",
+                entity_id,
+                config_entry_id,
+            )
+            return
+        self._reloaded_this_pass.add(config_entry_id)
+
         _LOGGER.info(
             "Auto-recovery: reloading config entry %s for %s (attempt %d/%d%s)",
             config_entry_id,
