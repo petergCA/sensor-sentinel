@@ -114,3 +114,39 @@ async def test_stale_incident_leaves_count_but_stays_listed(hass):
     assert listed == ["sensor.retired"]
     await _settle(hass, 20)
     await coordinator.async_shutdown()
+
+
+async def test_warmup_ignores_boot_blips_longer_than_grace(hass):
+    """A boot-time blip that outlasts the grace period but ends inside the
+    warmup window must not become an incident — nor a banked recovery.
+
+    Regression: the state listener was live during warmup, so every restart
+    promoted a few hundred briefly-unavailable entities (MQTT, Sonos…) to
+    down at +30s and counted them as recovered seconds later.
+    """
+    coordinator = await _started_coordinator(
+        hass, {CONF_STARTUP_GRACE: 90, CONF_GRACE_PERIOD: 30}
+    )
+    hass.states.async_set("sensor.blip", "unavailable")
+    hass.states.async_set("sensor.dead", "unavailable")
+    await hass.async_block_till_done()
+
+    await _settle(hass, 40)  # past the grace period, still inside warmup
+    assert "sensor.blip" not in coordinator._down
+    assert "sensor.dead" not in coordinator._down
+
+    hass.states.async_set("sensor.blip", "on")
+    await hass.async_block_till_done()
+    assert coordinator._recovered_today == 0
+
+    await _settle(hass, 95)  # warmup over: the seed picks up what is still bad
+    assert "sensor.dead" in coordinator._down
+    assert "sensor.blip" not in coordinator._down
+    assert coordinator._recovered_today == 0
+
+    # After warmup the normal grace path is back in charge.
+    hass.states.async_set("sensor.dead", "on")
+    await hass.async_block_till_done()
+    assert coordinator._recovered_today == 1
+    await _settle(hass, 20)
+    await coordinator.async_shutdown()

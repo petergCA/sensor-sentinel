@@ -130,6 +130,9 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._unsub: list[callable] = []
         self._platform_cache: dict[str, str | None] = {}
         self._write_scheduled = False
+        # True until the warmup seed runs. Boot churns thousands of entities
+        # through unavailable/unknown; the seed decides what is really down.
+        self._warming = False
 
         # Battery enrichment. Indexed once from the registry (and on registry
         # updates) so the hot path costs exactly one set lookup.
@@ -395,6 +398,11 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         )
 
         # Warmup: hold off the initial seed so boot-time transients don't count.
+        # The listener above is already live, so the hot path must ignore
+        # transitions until then — otherwise a boot-time blip outlasting the
+        # (shorter) grace period is promoted to down and then banked as a
+        # recovery, which is what inflated recovered_today on every restart.
+        self._warming = self._startup_grace > 0
         if self._startup_grace <= 0:
             self._reseed(initial=True)
         elif self.hass.state == CoreState.running:
@@ -464,6 +472,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     @callback
     def _warmup_seed(self, _now=None) -> None:
         """Seed after the warmup window: whatever is still bad is genuinely down."""
+        self._warming = False
         self._reseed(initial=True)
         self._schedule_write()
 
@@ -509,6 +518,9 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         if entity_id in self._battery_entities:
             if new_state is not None:
                 self._remember_battery(entity_id, new_state.state)
+
+        if self._warming:
+            return  # the warmup seed will pick up whatever is still bad
 
         is_bad = new_state is not None and new_state.state in self._bad_states
         tracked = entity_id in self._down or entity_id in self._pending
