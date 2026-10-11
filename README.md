@@ -113,7 +113,10 @@ events carry full context for your own automations. See [Events](#events).
 ## Using the card
 
 Incidents are grouped (by integration or area) and sorted (by count or name).
-Each group and the header have controls ([see the annotated card
+Silent devices (see [Detection](#detection)) always get their own group,
+**Silent - Check Battery**, pinned first and listed longest-silent first, with
+no reload button since a reload can't fix a battery. Each group and the header
+have controls ([see the annotated card
 above](#sensor-sentinel)):
 
 **Header**

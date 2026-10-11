@@ -10,6 +10,12 @@
 
 const DEFAULT_ENTITY = "sensor.sentinel_unavailable_count";
 
+// Silent devices (dead batteries that never went unavailable) get one group of
+// their own, pinned first whatever group_by says: the fix is the same for all
+// of them, and it isn't "reload the integration".
+const SILENT_KEY = "__silent__";
+const SILENT_LABEL = "Silent - Check Battery";
+
 const CONFIG_DEFAULTS = {
   entity: DEFAULT_ENTITY,
   sort: "count",
@@ -556,11 +562,13 @@ class SensorSentinelCard extends HTMLElement {
   // -- Render --------------------------------------------------------------
 
   _groupKey(inc) {
+    if (inc.reason === "silent") return SILENT_KEY;
     if (this._config.group_by === "area") return inc.area || "unassigned";
     return inc.integration || "unknown";
   }
 
   _groupLabel(key) {
+    if (key === SILENT_KEY) return SILENT_LABEL;
     if (this._config.group_by === "area") return key;
     return this._integrationName(key);
   }
@@ -572,7 +580,8 @@ class SensorSentinelCard extends HTMLElement {
       (inc.name || "").toLowerCase().includes(f) ||
       (inc.entity_id || "").toLowerCase().includes(f) ||
       (inc.area || "").toLowerCase().includes(f) ||
-      (inc.integration || "").toLowerCase().includes(f)
+      (inc.integration || "").toLowerCase().includes(f) ||
+      (inc.reason === "silent" && SILENT_LABEL.toLowerCase().includes(f))
     );
   }
 
@@ -666,9 +675,12 @@ class SensorSentinelCard extends HTMLElement {
       const key = this._groupKey(inc);
       (groups[key] = groups[key] || []).push(inc);
     }
+    // Longest-silent first: that's the battery to change first.
+    groups[SILENT_KEY]?.sort((a, b) => (a.since || "").localeCompare(b.since || ""));
 
     const sortMode = this._config.sort || "count";
     const orderedKeys = Object.keys(groups).sort((a, b) => {
+      if (a === SILENT_KEY || b === SILENT_KEY) return a === SILENT_KEY ? -1 : 1;
       if (sortMode === "count") {
         const diff = groups[b].length - groups[a].length;
         if (diff) return diff;
@@ -747,17 +759,20 @@ class SensorSentinelCard extends HTMLElement {
 
   _renderGroup(key, rows) {
     const collapsed = this._isCollapsed(key);
+    const silent = key === SILENT_KEY;
     const items = collapsed ? "" : rows.map((inc) => this._renderRow(inc)).join("");
     return `
-      <div class="ss-group">
+      <div class="ss-group${silent ? " ss-group-silent" : ""}">
         <div class="ss-group-head">
           <span class="ss-caret" data-toggle="${encodeURIComponent(key)}">${collapsed ? "▸" : "▾"}</span>
-          <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${esc(this._groupLabel(key))} <span class="ss-group-count">(${rows.length})</span></span>
+          <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${
+            silent ? '<ha-icon icon="mdi:battery-alert-variant-outline" class="ss-silent-icon"></ha-icon> ' : ""
+          }${esc(this._groupLabel(key))} <span class="ss-group-count">(${rows.length})</span></span>
           <span class="ss-group-actions">
             <button data-gact="snooze" data-gkey="${encodeURIComponent(key)}" title="Snooze all in group">💤</button>
             <button data-gact="exclude" data-gkey="${encodeURIComponent(key)}" title="Exclude all in group">⚠️</button>
             ${
-              this._config.group_by === "integration" && this._config.show_reload
+              this._config.group_by === "integration" && this._config.show_reload && !silent
                 ? `<button data-gact="reload" data-gkey="${encodeURIComponent(key)}" title="Reload this integration"><ha-icon icon="mdi:reload" class="ss-reload"></ha-icon></button>`
                 : `<span class="ss-slot"></span>`
             }
@@ -778,7 +793,6 @@ class SensorSentinelCard extends HTMLElement {
         : "";
     const silent = inc.reason === "silent";
     const badges =
-      (silent ? ' <span class="ss-badge ss-silent">silent</span>' : "") +
       lowBattery +
       (inc.flapping ? ' <span class="ss-badge ss-flap">flapping</span>' : "") +
       (inc.stale ? ' <span class="ss-badge ss-stale">stale</span>' : "");
@@ -1036,7 +1050,8 @@ class SensorSentinelCard extends HTMLElement {
           .ss-flap { color:var(--warning-color,#ffa600); }
           .ss-stale { color:var(--secondary-text-color); }
           .ss-batt { color:var(--error-color,#db4437); }
-          .ss-silent { color:var(--warning-color,#ff9800); }
+          .ss-group-silent .ss-group-name { color:var(--warning-color,#ff9800); }
+          .ss-silent-icon { --mdc-icon-size:18px; vertical-align:-3px; }
           .ss-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
