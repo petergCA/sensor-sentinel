@@ -378,15 +378,25 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         """Map devices to their last_seen sensor and to the entity that should
         stand for them in an incident. Registry-only — touches no states.
 
+        Battery devices only. A mains device (fan, plug, repeater) is not
+        polled and only talks when something changes, so its last_seen goes
+        stale whenever nobody touches it — and if it does die, it goes
+        unavailable on the first failed send, which the state check already
+        catches. A dead battery sleeper is the one case nothing else sees.
+
         A disabled last_seen sensor is invisible here (it has no state), so a
         device whose sensor is disabled is simply not checked.
         """
         by_device: dict[str, str] = {}
         candidates: dict[str, list] = {}
+        battery_devices: set[str] = set()
         for entry in er.async_get(self.hass).entities.values():
-            if not entry.device_id or entry.disabled_by is not None:
+            if not entry.device_id or entry.platform not in SILENT_PLATFORMS:
                 continue
-            if entry.platform not in SILENT_PLATFORMS:
+            # Disabled battery entities still prove the device runs on one.
+            if (entry.device_class or entry.original_device_class) == "battery":
+                battery_devices.add(entry.device_id)
+            if entry.disabled_by is not None:
                 continue
             if self._is_last_seen(entry):
                 by_device.setdefault(entry.device_id, entry.entity_id)
@@ -405,6 +415,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             )
             return (order, len(entity_id), entity_id)
 
+        by_device = {d: e for d, e in by_device.items() if d in battery_devices}
         primary: dict[str, str] = {}
         for device_id, last_seen_eid in by_device.items():
             options = candidates.get(device_id)

@@ -61,7 +61,10 @@ services.
   reading "closed" at 100% battery indefinitely. With **Flag devices not heard
   from in** set, any device whose `last_seen` sensor is older than that is
   raised as one incident, named after the device, with its last reported
-  battery. It clears as soon as the device is heard from again.
+  battery. It clears as soon as the device is heard from again. Only
+  **battery** devices are checked: mains devices aren't polled and can sit
+  quiet for days when nobody uses them, and a dead one goes unavailable on its
+  own.
 - **Durable** — incident start-times and snoozes persist across restarts, so
   durations and the trend sparkline survive a reboot.
 

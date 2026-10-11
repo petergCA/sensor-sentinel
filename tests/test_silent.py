@@ -55,7 +55,10 @@ def zwave_entry(hass):
     return entry
 
 
-def _contact(hass, zwave_entry, slug: str, node: int, last_seen: str, battery=100):
+def _contact(
+    hass, zwave_entry, slug: str, node: int, last_seen: str, battery=100,
+    battery_disabled=False,
+):
     """A Z-Wave contact sensor device, shaped like the real Ring one."""
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=zwave_entry.entry_id,
@@ -92,17 +95,20 @@ def _contact(hass, zwave_entry, slug: str, node: int, last_seen: str, battery=10
         original_device_class="timestamp",
         entity_category=EntityCategory.DIAGNOSTIC,
     )
-    batt = _make(
-        "sensor",
-        "-128-0-level",
-        f"{slug}_battery",
-        original_device_class="battery",
-        entity_category=EntityCategory.DIAGNOSTIC,
-    )
+    if battery is not None:
+        batt = _make(
+            "sensor",
+            "-128-0-level",
+            f"{slug}_battery",
+            original_device_class="battery",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            disabled_by=er.RegistryEntryDisabler.INTEGRATION if battery_disabled else None,
+        )
+        if not battery_disabled:
+            hass.states.async_set(batt, str(battery))
     hass.states.async_set(contact, "off")
     hass.states.async_set(tamper, "off")
     hass.states.async_set(seen, last_seen)
-    hass.states.async_set(batt, str(battery))
     return device.id, contact, seen
 
 
@@ -303,3 +309,21 @@ async def test_notification_wording(hass):
     assert "Front Door — not heard from in 336d, last reported battery 100%" in message
     assert "**Down**" in message and "- Lamp" in message
     assert "- Window (heard from again)" in message
+
+
+async def test_mains_devices_are_not_checked(hass, zwave_entry):
+    """A fan or plug nobody touched for two days is quiet, not dead: mains
+    nodes aren't polled, and a dead one goes unavailable on its own. Field
+    case: 15 mains devices all showed the same last_seen (a Z-Wave JS restart)
+    and were wrongly flagged."""
+    _, mains, _ = _contact(hass, zwave_entry, "patio_fan", 3, _ago(72), battery=None)
+    _, hidden, _ = _contact(
+        hass, zwave_entry, "hall_motion", 4, _ago(72), battery_disabled=True
+    )
+    _, sleeper, _ = _contact(hass, zwave_entry, "front_door", 21, _ago(72))
+    coordinator = await _start(hass, _BASE)
+    assert mains not in coordinator._down
+    # A disabled battery sensor still marks the device as battery-powered.
+    assert hidden in coordinator._down
+    assert sleeper in coordinator._down
+    await _stop(hass, coordinator)
