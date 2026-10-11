@@ -108,14 +108,24 @@ class ExclusionEngine:
 
     # -- Evaluation ---------------------------------------------------------
 
-    def match(self, entity_id: str, now_ts: float | None = None) -> ExclusionMatch | None:
+    def match(
+        self,
+        entity_id: str,
+        now_ts: float | None = None,
+        *,
+        ignore_domains: bool = False,
+    ) -> ExclusionMatch | None:
         """Return the first matching rule, or None if the entity is not excluded.
 
         Order is cheapest-first: domain and explicit-id are set lookups; glob and
         integration are the only non-trivial checks.
+
+        ``ignore_domains`` is for the silent-device check. Domain rules exist
+        because ``unknown`` is a normal *state* for buttons, events and the
+        like; they say nothing about whether the device is still alive.
         """
         domain = entity_id.partition(".")[0]
-        if domain in self._domains:
+        if not ignore_domains and domain in self._domains:
             return ExclusionMatch("domain", domain)
 
         if entity_id in self._entities:
@@ -137,5 +147,11 @@ class ExclusionEngine:
 
         return None
 
-    def is_excluded(self, entity_id: str, now_ts: float | None = None) -> bool:
-        return self.match(entity_id, now_ts) is not None
+    def is_excluded(
+        self,
+        entity_id: str,
+        now_ts: float | None = None,
+        *,
+        ignore_domains: bool = False,
+    ) -> bool:
+        return self.match(entity_id, now_ts, ignore_domains=ignore_domains) is not None

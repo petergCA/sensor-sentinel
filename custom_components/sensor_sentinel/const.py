@@ -32,6 +32,8 @@ CONF_REALERT_HOURS = "realert_hours"
 CONF_STALE_DAYS = "stale_days"
 CONF_AUTO_RECOVERY = "auto_recovery"
 CONF_RECOVERY_DELAY = "recovery_delay"
+CONF_SILENT_HOURS = "silent_hours"
+CONF_SILENT_EXCLUDE_DEVICES = "silent_exclude_devices"
 
 # ---------------------------------------------------------------------------
 # Defaults — ported from the jazzyisj template semantics (see PRD §3, Q1).
@@ -94,6 +96,20 @@ RECOVERY_MAX_ATTEMPTS = 3
 # giving up. A reload that fixes things needs exactly one attempt anyway.
 RECOVERY_MAX_ATTEMPTS_SHARED = 1
 RECOVERY_COOLDOWN = 900
+
+# Silent-device check. A battery device that dies keeps its last state (say,
+# "closed" at 100%) forever: a sleeping Z-Wave node is never sent anything, so
+# it is never marked dead and its entities never go unavailable. The only trace
+# is its last_seen timestamp going stale. Flag a device once last_seen is older
+# than this many hours. 0 disables, so existing installs see no change.
+DEFAULT_SILENT_HOURS = 0
+# Platforms whose last_seen sensors we trust (Z-Wave JS node statistics, and
+# Zigbee2MQTT when its last_seen option is enabled). Kept narrow on purpose:
+# other "last seen" sensors (e.g. BLE presence) are about people, not health.
+SILENT_PLATFORMS = frozenset({"zwave_js", "mqtt"})
+# Incident.reason values. "state" = the classic unavailable/unknown incident.
+REASON_STATE = "state"
+REASON_SILENT = "silent"
 # How often the periodic housekeeping tick runs (re-alert / stale / recovery).
 HOUSEKEEPING_INTERVAL = 300
 

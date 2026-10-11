@@ -295,7 +295,19 @@ class SensorSentinelCard extends HTMLElement {
         true
       );
       const r = res?.response || {};
-      if (r.result === "down") {
+      if (r.result === "down" && r.reason === "silent") {
+        rows.push([
+          "Status",
+          r.stale
+            ? "Silent · stale (treated as retired)"
+            : "Silent — the device has stopped reporting",
+        ]);
+        rows.push(["Last heard from", this._fmtDate(r.last_seen)]);
+        rows.push(["Shown state", `${r.state} (last value it reported)`]);
+        if (typeof r.battery === "number") {
+          rows.push(["Battery (last reported)", `${r.battery}%`]);
+        }
+      } else if (r.result === "down") {
         rows.push(["Status", r.stale ? "Down · stale (treated as retired)" : "Down"]);
         rows.push(["Down since", this._fmtDate(r.since)]);
         rows.push(["Current state", r.state]);
@@ -764,7 +776,9 @@ class SensorSentinelCard extends HTMLElement {
       typeof inc.battery === "number" && inc.battery <= 20
         ? ` <span class="ss-badge ss-batt">${inc.battery}% battery</span>`
         : "";
+    const silent = inc.reason === "silent";
     const badges =
+      (silent ? ' <span class="ss-badge ss-silent">silent</span>' : "") +
       lowBattery +
       (inc.flapping ? ' <span class="ss-badge ss-flap">flapping</span>' : "") +
       (inc.stale ? ' <span class="ss-badge ss-stale">stale</span>' : "");
@@ -788,10 +802,18 @@ class SensorSentinelCard extends HTMLElement {
       <div class="ss-row">
         ${mainOpen}
           <div class="ss-name">${esc(inc.name || eid)}${badges}</div>
-          <div class="ss-meta">${esc(inc.area || "—")} · ${esc(inc.state)} · ${this._duration(inc.since)}${
-            typeof inc.battery === "number" && inc.battery > 20
-              ? ` · ${inc.battery}% battery`
-              : ""
+          <div class="ss-meta">${
+            silent
+              ? `${esc(inc.area || "—")} · not heard from in ${this._duration(inc.since)}${
+                  typeof inc.battery === "number" && inc.battery > 20
+                    ? ` · last reported ${inc.battery}% battery`
+                    : ""
+                }`
+              : `${esc(inc.area || "—")} · ${esc(inc.state)} · ${this._duration(inc.since)}${
+                  typeof inc.battery === "number" && inc.battery > 20
+                    ? ` · ${inc.battery}% battery`
+                    : ""
+                }`
           }</div>
         ${mainClose}
         <div class="ss-actions">${actions}</div>
@@ -1014,6 +1036,7 @@ class SensorSentinelCard extends HTMLElement {
           .ss-flap { color:var(--warning-color,#ffa600); }
           .ss-stale { color:var(--secondary-text-color); }
           .ss-batt { color:var(--error-color,#db4437); }
+          .ss-silent { color:var(--warning-color,#ff9800); }
           .ss-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }

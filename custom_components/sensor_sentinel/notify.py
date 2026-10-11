@@ -27,6 +27,7 @@ from .const import (
     EVENT_ENTITY_RECOVERED,
     EVENT_ENTITY_STILL_DOWN,
     NAME,
+    REASON_SILENT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +48,19 @@ def _battery_suffix(inc: dict) -> str:
     if battery <= _BATTERY_SUSPECT:
         return f" — battery {battery}%, likely flat"
     return f" — battery {battery}%"
+
+def _silent_line(inc: dict) -> str:
+    """One line for a device that has gone quiet.
+
+    The battery figure is what the device said before it went silent, so it is
+    labelled as such: a dead sensor often still reads 100%.
+    """
+    hours = inc.get("silent_for_hours") or 0
+    span = f"{hours // 24}d" if hours >= 48 else f"{hours}h"
+    battery = inc.get("battery")
+    batt = f", last reported battery {battery}%" if battery is not None else ""
+    return f"- {inc.get('name', inc['entity_id'])} — not heard from in {span}{batt}"
+
 
 # Collect events for this long before sending one grouped notification.
 _BATCH_WINDOW = 5.0
@@ -123,7 +137,9 @@ class SentinelNotifier:
             return
 
         message = self._compose(down, recovered, still_down)
-        if down:
+        if down and all(inc.get("reason") == REASON_SILENT for inc in down):
+            title = f"{NAME}: {len(down)} silent"
+        elif down:
             title = f"{NAME}: {len(down)} down"
         elif recovered:
             title = f"{NAME}: {len(recovered)} recovered"
@@ -148,7 +164,14 @@ class SentinelNotifier:
         self, down: list[dict], recovered: list[dict], still_down: list[dict]
     ) -> str:
         lines: list[str] = []
+        silent = [inc for inc in down if inc.get("reason") == REASON_SILENT]
+        down = [inc for inc in down if inc.get("reason") != REASON_SILENT]
+        if silent:
+            lines.append("**Silent** (device stopped reporting)")
+            lines.extend(_silent_line(inc) for inc in silent)
         if down:
+            if lines:
+                lines.append("")
             # Roll up by integration; large groups collapse to one line.
             by_integration: dict[str, list[dict]] = {}
             for inc in down:
@@ -181,5 +204,6 @@ class SentinelNotifier:
             lines.append("")
             lines.append("**Recovered**")
             for inc in recovered:
-                lines.append(f"- {inc.get('name', inc['entity_id'])}")
+                heard = " (heard from again)" if inc.get("reason") == REASON_SILENT else ""
+                lines.append(f"- {inc.get('name', inc['entity_id'])}{heard}")
         return "\n".join(lines)

@@ -66,6 +66,8 @@ class SentinelCountSensor(SentinelEntity, SensorEntity):
                 "since": inc.since,
                 "battery": inc.battery,
                 "flapping": inc.flapping,
+                "reason": inc.reason,
+                "last_seen": inc.last_seen,
             }
             for inc in incidents[:MAX_ATTR_ENTITIES]
         ]

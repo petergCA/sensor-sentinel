@@ -28,6 +28,8 @@
           "stale_days": "Auto-retire incidents down longer than (days)",
           "auto_recovery": "Attempt automatic recovery",
           "recovery_delay": "Wait before recovery attempt (seconds)",
+          "silent_hours": "Flag devices not heard from in (hours)",
+          "silent_exclude_devices": "Devices exempt from the silent check",
           "notify_targets": "Mobile notify services (e.g. mobile_app_iphone)",
           "persistent_notification": "Create persistent notifications"
         },
@@ -43,6 +45,8 @@
           "stale_days": "Incidents down longer than this are treated as retired devices: dropped from the count and notifications, but still shown (flagged) in the card. 0 disables.",
           "auto_recovery": "When on, try to heal an entity that stays down: ping Z-Wave nodes, or reload the owning integration — with attempt caps and cooldowns. Off by default.",
           "recovery_delay": "How long an entity must be down before the first recovery attempt (only used when automatic recovery is on).",
+          "silent_hours": "Catches dead battery devices that never go unavailable: a sleeping Z-Wave node keeps its last state and battery level forever. A device is flagged when its last_seen sensor (Z-Wave JS, or Zigbee2MQTT with last_seen enabled) is older than this. Allow at least twice the device's wake-up interval; 48 suits most battery sensors. 0 disables.",
+          "silent_exclude_devices": "Devices that are legitimately quiet for long stretches, such as button remotes, so they are never flagged as silent.",
           "notify_targets": "notify.* service names without the notify. prefix, e.g. mobile_app_your_phone."
         }
       },

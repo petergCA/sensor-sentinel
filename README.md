@@ -51,9 +51,17 @@ services.
   scan on any event; sensor attribute payloads are hard-capped.
 - **Grace window** — a per-entity debounce (default 60s) suppresses flaps: an
   entity must stay bad past the window before it counts as an incident.
-- **Startup warmup** — entities already bad at boot are held for a warmup window
-  (default 120s) before counting, so transient boot-time unknowns (MQTT retained
-  values, Z-Wave interviews, device trackers) don't spike the count.
+- **Startup warmup** — nothing is counted until a warmup window (default 120s)
+  after boot, so transient boot-time unknowns (MQTT retained values, Z-Wave
+  interviews, device trackers) don't spike the count or `recovered_today`.
+  Whatever is still bad when the window ends is recorded as down.
+- **Silent devices (opt-in)** — catches the failure the state check can't see: a
+  battery device that dies but never goes `unavailable`. A sleeping Z-Wave node
+  is never sent anything, so it is never marked dead, and its contact keeps
+  reading "closed" at 100% battery indefinitely. With **Flag devices not heard
+  from in** set, any device whose `last_seen` sensor is older than that is
+  raised as one incident, named after the device, with its last reported
+  battery. It clears as soon as the device is heard from again.
 - **Durable** — incident start-times and snoozes persist across restarts, so
   durations and the trend sparkline survive a reboot.
 
@@ -158,6 +166,8 @@ inline help text.
 | **Integration rollup threshold** | 5 | Collapse a burst from one integration into a single rolled-up incident. |
 | **Re-alert if still down after** | 0 (off) | Re-notify after this many hours. |
 | **Auto-retire incidents after** | 0 (off) | Drop incidents down longer than this many days. |
+| **Flag devices not heard from in** | 0 (off) | Raise a *silent* incident for a device whose `last_seen` is older than this many hours. 48 suits most battery sensors; allow at least twice the device's wake-up interval. |
+| **Devices exempt from the silent check** | — | Devices that are legitimately quiet, such as button remotes. |
 | **Automatic recovery** | off | Try to heal stuck entities (ping / reload) with guardrails — see below. |
 | **Recovery delay** | 300s | How long down before the first recovery attempt. |
 | **Notification targets** | — | `notify.*` service names (without the `notify.` prefix). |
@@ -202,8 +212,12 @@ auto-recovery to discover.
 
 | Event | Data |
 | --- | --- |
-| `sensor_sentinel.entity_down` | `entity_id, state, name, integration, device, area, since, flapping, stale` |
-| `sensor_sentinel.entity_recovered` | `entity_id, name` |
+| `sensor_sentinel.entity_down` | `entity_id, state, name, integration, device, device_id, area, since, battery, flapping, stale, reason` — plus `last_seen, silent_for_hours` when `reason` is `silent` |
+| `sensor_sentinel.entity_recovered` | `entity_id, name, reason, device_id` |
+
+`reason` is `state` for an unavailable/unknown entity and `silent` for a device
+that stopped reporting. Existing automations keep working unchanged; filter on
+`reason` if you want to treat the two differently.
 | `sensor_sentinel.entity_still_down` | incident fields + `down_seconds` (fired by the opt-in re-alert) |
 
 ## Services
@@ -225,6 +239,9 @@ auto-recovery to discover.
 - Sensor writes are coalesced (≤1/sec) so a flapping storm can't thrash Core.
 - The full incident list is served on demand over a websocket command, so the
   sensor's attribute payload never grows unbounded.
+- The silent-device check adds no listeners and touches only devices that have a
+  `last_seen` sensor, once per housekeeping tick (every 5 minutes). The hot path
+  pays one empty-dict check unless a silent incident is live.
 
 ## Good to know
 
@@ -236,6 +253,19 @@ auto-recovery to discover.
   it in the state machine as `unavailable` until its integration reloads (e.g.
   Z-Wave JS). Sentinel drops disabled entities on sight, and a reload/restart
   clears them from HA for good.
+- **Silent-device check: what it reads.** Z-Wave JS devices expose a
+  `Last seen` diagnostic sensor. It is **disabled by default on some installs**,
+  and a device whose sensor is disabled isn't checked, so enable the ones you
+  care about. Zigbee2MQTT devices are covered once Z2M's `last_seen` option is
+  on and the `Last seen` sensor is enabled. Other "last seen" sensors (BLE
+  presence trackers and the like) are deliberately ignored.
+- **Silent-device check: what it honours.** Entity, glob, integration and snooze
+  exclusions apply. *Domain* exclusions don't: they exist because `unknown` is a
+  normal state for buttons and events, which says nothing about whether the
+  device is alive. Exempt quiet devices (remotes) with **Devices exempt from the
+  silent check**. A device that already has an unavailable entity is reported
+  by that incident alone, not twice, and auto-recovery never acts on a silent
+  device (a reload can't change a battery).
 - **Count looks high right after a restart?** That's the startup warmup settling
   — boot-time transients clear within the warmup window.
 
@@ -274,9 +304,9 @@ If a dashboard shows a red **"Configuration error"** where the card should be:
 
 ## Status
 
-Actively developed. Auto-recovery, re-alert, and stale-retire are **opt-in** and
-conservative (off by default), so the integration never acts on your system
-unless you ask it to.
+Actively developed. Auto-recovery, re-alert, stale-retire and the silent-device
+check are **opt-in** and conservative (off by default), so the integration
+never acts on your system unless you ask it to.
 
 ## License
 

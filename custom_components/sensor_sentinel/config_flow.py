@@ -33,6 +33,8 @@ from .const import (
     CONF_PERSISTENT_NOTIFICATION,
     CONF_RECOVERY_DELAY,
     CONF_REALERT_HOURS,
+    CONF_SILENT_EXCLUDE_DEVICES,
+    CONF_SILENT_HOURS,
     CONF_STALE_DAYS,
     CONF_STARTUP_GRACE,
     DATA_MANAGER,
@@ -43,10 +45,12 @@ from .const import (
     DEFAULT_INTEGRATION_THRESHOLD,
     DEFAULT_RECOVERY_DELAY,
     DEFAULT_REALERT_HOURS,
+    DEFAULT_SILENT_HOURS,
     DEFAULT_STALE_DAYS,
     DEFAULT_STARTUP_GRACE,
     DOMAIN,
     NAME,
+    REASON_SILENT,
 )
 from .exclusions import ExclusionEngine
 
@@ -88,6 +92,8 @@ _DEFAULTS: dict[str, Any] = {
     CONF_STALE_DAYS: DEFAULT_STALE_DAYS,
     CONF_AUTO_RECOVERY: DEFAULT_AUTO_RECOVERY,
     CONF_RECOVERY_DELAY: DEFAULT_RECOVERY_DELAY,
+    CONF_SILENT_HOURS: DEFAULT_SILENT_HOURS,
+    CONF_SILENT_EXCLUDE_DEVICES: [],
 }
 
 
@@ -136,6 +142,14 @@ class _CleanSelectSelector(selector.SelectSelector):
 class _CleanEntitySelector(selector.EntitySelector):
     """An ``EntitySelector`` that drops the ``null`` the picker emits for a stored
     entity_id that no longer resolves — the exact value that crashed the dialog."""
+
+    def __call__(self, data: Any) -> list[str]:
+        return super().__call__(_clean_str_list(data))
+
+
+class _CleanDeviceSelector(selector.DeviceSelector):
+    """A ``DeviceSelector`` with the same ``null``-stripping as the entity one,
+    for a stored device that has since been deleted."""
 
     def __call__(self, data: Any) -> list[str]:
         return super().__call__(_clean_str_list(data))
@@ -276,6 +290,18 @@ class SentinelOptionsFlow(OptionsFlow):
                         mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
+                vol.Required(
+                    CONF_SILENT_HOURS, default=self._current(CONF_SILENT_HOURS)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=720, step=1, unit_of_measurement="h",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Optional(
+                    CONF_SILENT_EXCLUDE_DEVICES,
+                    default=self._current(CONF_SILENT_EXCLUDE_DEVICES),
+                ): _CleanDeviceSelector(selector.DeviceSelectorConfig(multiple=True)),
                 vol.Optional(
                     CONF_NOTIFY_TARGETS, default=self._current(CONF_NOTIFY_TARGETS)
                 ): _tag_selector(self._current(CONF_NOTIFY_TARGETS)),
@@ -326,8 +352,21 @@ class SentinelOptionsFlow(OptionsFlow):
             return []
         coordinator = data[DATA_MANAGER]
         engine = ExclusionEngine(self._proposed, coordinator._platform_of)
+        silent_off = not self._proposed.get(CONF_SILENT_HOURS)
+        silent_devices = set(self._proposed.get(CONF_SILENT_EXCLUDE_DEVICES) or [])
+
+        def _silenced(eid: str, inc) -> bool:
+            if inc.reason == REASON_SILENT:
+                # Mirrors the coordinator: domain rules don't apply to silence.
+                return (
+                    silent_off
+                    or inc.device_id in silent_devices
+                    or engine.is_excluded(eid, ignore_domains=True)
+                )
+            return engine.is_excluded(eid)
+
         return sorted(
             eid
-            for eid in coordinator.data.incidents
-            if engine.is_excluded(eid)
+            for eid, inc in coordinator.data.incidents.items()
+            if _silenced(eid, inc)
         )

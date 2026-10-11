@@ -17,8 +17,11 @@ Startup is softened by a *warmup window* (``startup_grace``): entities already
 bad at boot are only counted once they survive the window, so transient
 boot-time unknowns (MQTT retained, Z-Wave interview) never spike the count.
 A periodic housekeeping tick drives the opt-in re-alert / stale-retire /
-auto-recovery features. Incident ``since`` timestamps and snoozes survive a
-restart via the config Store.
+auto-recovery features, and the opt-in *silent-device* check: a device whose
+last_seen timestamp has gone stale is flagged even though its entities still
+look healthy (a dead battery sensor keeps reporting its last state forever).
+Incident ``since`` timestamps and snoozes survive a restart via the config
+Store.
 """
 
 from __future__ import annotations
@@ -46,6 +49,8 @@ from .const import (
     CONF_GRACE_PERIOD,
     CONF_RECOVERY_DELAY,
     CONF_REALERT_HOURS,
+    CONF_SILENT_EXCLUDE_DEVICES,
+    CONF_SILENT_HOURS,
     CONF_STALE_DAYS,
     CONF_STARTUP_GRACE,
     DEFAULT_AUTO_RECOVERY,
@@ -53,6 +58,7 @@ from .const import (
     DEFAULT_GRACE_PERIOD,
     DEFAULT_RECOVERY_DELAY,
     DEFAULT_REALERT_HOURS,
+    DEFAULT_SILENT_HOURS,
     DEFAULT_STALE_DAYS,
     DEFAULT_STARTUP_GRACE,
     DOMAIN,
@@ -63,6 +69,9 @@ from .const import (
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_ATTEMPTS,
     RECOVERY_MAX_ATTEMPTS_SHARED,
+    REASON_SILENT,
+    REASON_STATE,
+    SILENT_PLATFORMS,
     STATE_WRITE_DEBOUNCE,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -75,6 +84,12 @@ _LOGGER = logging.getLogger(__name__)
 _FLAP_WINDOW = 300.0
 # Debounce window for persisting state to the Store.
 _STORE_DEBOUNCE = 15
+# When picking the entity that represents a silent device, prefer the one a
+# person actually cares about (the contact, the lock) over its diagnostics.
+_PRIMARY_DOMAINS = (
+    "binary_sensor", "lock", "cover", "switch", "light", "climate", "fan",
+    "sensor", "event",
+)
 
 
 @dataclass
@@ -95,6 +110,12 @@ class Incident:
     battery: int | None = None
     flapping: bool = False
     stale: bool = False
+    device_id: str | None = None
+    # "state" for an unavailable/unknown entity; "silent" for a device whose
+    # last_seen went stale while its entities kept their last values.
+    reason: str = REASON_STATE
+    last_seen: str | None = None  # ISO8601, silent incidents only
+    silent_for_hours: int | None = None  # refreshed each housekeeping tick
 
     def as_event_data(self) -> dict:
         return asdict(self)
@@ -140,6 +161,15 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._battery_by_device: dict[str, str] = {}  # device_id -> battery eid
         self._battery_cache: dict[str, int] = {}  # battery eid -> last good %
 
+        # Silent-device check. Registry-only index, rebuilt with the battery one.
+        self._last_seen_by_device: dict[str, str] = {}  # device_id -> last_seen eid
+        self._last_seen_entities: dict[str, str] = {}  # last_seen eid -> device_id
+        self._primary_by_device: dict[str, str] = {}  # device_id -> reported eid
+        # device_id -> the entity its silent incident is keyed on. A map, not a
+        # set, so a registry change that re-picks the primary entity can't
+        # orphan a live incident.
+        self._silent: dict[str, str] = {}
+
         # Persistence + insight/housekeeping state.
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._stored_since: dict[str, str] = {}
@@ -184,6 +214,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             opts.get(CONF_AUTO_RECOVERY, DEFAULT_AUTO_RECOVERY)
         )
         self._recovery_delay = _num(CONF_RECOVERY_DELAY, DEFAULT_RECOVERY_DELAY)
+        self._silent_hours = _num(CONF_SILENT_HOURS, DEFAULT_SILENT_HOURS)
+        self._silent_excluded_devices = frozenset(
+            d for d in (opts.get(CONF_SILENT_EXCLUDE_DEVICES) or []) if isinstance(d, str)
+        )
 
     async def async_options_updated(self) -> None:
         """Re-read options after the user edits the exclusions UI."""
@@ -242,10 +276,12 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             inc = self._down[entity_id]
             return {
                 "result": "down",
+                "reason": inc.reason,
                 "state": state.state,
                 "since": inc.since,
                 "stale": inc.stale,
                 "battery": inc.battery,
+                "last_seen": inc.last_seen,
             }
         if entity_id in self._pending:
             return {"result": "pending_grace", "state": state.state}
@@ -322,6 +358,169 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             return None
         return self._battery_cache.get(battery_eid)
 
+    # -- Silent devices -------------------------------------------------------
+
+    @staticmethod
+    def _is_last_seen(entry) -> bool:
+        """A device-health last_seen timestamp sensor from a platform we trust.
+
+        Z-Wave JS: unique_id ``<home>.<node>.statistics_last_seen``.
+        Zigbee2MQTT: ``<ieee>_last_seen_zigbee2mqtt`` (when last_seen is on).
+        """
+        return (
+            entry.domain == "sensor"
+            and entry.platform in SILENT_PLATFORMS
+            and (entry.device_class or entry.original_device_class) == "timestamp"
+            and "last_seen" in str(entry.unique_id)
+        )
+
+    def _index_last_seen(self) -> None:
+        """Map devices to their last_seen sensor and to the entity that should
+        stand for them in an incident. Registry-only — touches no states.
+
+        A disabled last_seen sensor is invisible here (it has no state), so a
+        device whose sensor is disabled is simply not checked.
+        """
+        by_device: dict[str, str] = {}
+        candidates: dict[str, list] = {}
+        for entry in er.async_get(self.hass).entities.values():
+            if not entry.device_id or entry.disabled_by is not None:
+                continue
+            if entry.platform not in SILENT_PLATFORMS:
+                continue
+            if self._is_last_seen(entry):
+                by_device.setdefault(entry.device_id, entry.entity_id)
+            elif entry.entity_category is None:
+                candidates.setdefault(entry.device_id, []).append(entry.entity_id)
+
+        def _rank(entity_id: str) -> tuple[int, int, str]:
+            # Within a domain the shortest id is nearly always the device's
+            # main entity: a Ring contact has ten binary_sensors, and the
+            # contact itself is the bare `binary_sensor.contact_front_door`.
+            domain = entity_id.partition(".")[0]
+            order = (
+                _PRIMARY_DOMAINS.index(domain)
+                if domain in _PRIMARY_DOMAINS
+                else len(_PRIMARY_DOMAINS)
+            )
+            return (order, len(entity_id), entity_id)
+
+        primary: dict[str, str] = {}
+        for device_id, last_seen_eid in by_device.items():
+            options = candidates.get(device_id)
+            primary[device_id] = min(options, key=_rank) if options else last_seen_eid
+        self._last_seen_by_device = by_device
+        self._last_seen_entities = {eid: dev for dev, eid in by_device.items()}
+        self._primary_by_device = primary
+
+    @staticmethod
+    def _parse_last_seen(state):
+        """The last_seen value as an aware UTC datetime, or None if unreadable."""
+        if state is None:
+            return None
+        parsed = dt_util.parse_datetime(state.state)
+        if parsed is None:
+            return None  # unavailable / unknown / garbage: no news either way
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.UTC)
+        return dt_util.as_utc(parsed)
+
+    def _silent_excluded(self, device_id: str, primary: str, now_ts: float) -> bool:
+        return device_id in self._silent_excluded_devices or self.exclusions.is_excluded(
+            primary, now_ts, ignore_domains=True
+        )
+
+    def _scan_silent(self, announce: bool) -> bool:
+        """Raise and refresh silent-device incidents. Returns True on change.
+
+        Runs from housekeeping (every HOUSEKEEPING_INTERVAL) and the seed —
+        never from the state_changed hot path — and walks only the devices that
+        have a last_seen sensor.
+        """
+        if self._silent_hours <= 0:
+            return False
+        now = dt_util.utcnow()
+        now_ts = time.time()
+        threshold = self._silent_hours * 3600
+        # A device that already has a real (state) incident is reported by that
+        # incident; a second "silent" line for it would be noise.
+        state_devices = {
+            inc.device_id
+            for inc in self._down.values()
+            if inc.reason == REASON_STATE and inc.device_id
+        }
+        changed = False
+        for device_id, last_seen_eid in self._last_seen_by_device.items():
+            if device_id in self._silent:
+                primary = self._silent[device_id]
+                if device_id in state_devices or self._silent_excluded(
+                    device_id, primary, now_ts
+                ):
+                    # Superseded or newly excluded: drop it, but it did not
+                    # recover, so don't bank a recovery.
+                    self._clear_tracking(primary)
+                    changed = True
+                    continue
+                changed |= self._check_silent_device(
+                    device_id, self.hass.states.get(last_seen_eid), now
+                )
+                continue
+
+            if device_id in state_devices:
+                continue
+            primary = self._primary_by_device.get(device_id, last_seen_eid)
+            if primary in self._down or primary in self._pending:
+                continue
+            last_seen = self._parse_last_seen(self.hass.states.get(last_seen_eid))
+            if last_seen is None:
+                continue
+            age = (now - last_seen).total_seconds()
+            if age < threshold or self._silent_excluded(device_id, primary, now_ts):
+                continue
+            self._promote_silent(device_id, primary, last_seen, age, announce)
+            changed = True
+        return changed
+
+    def _promote_silent(
+        self, device_id: str, primary: str, last_seen, age: float, announce: bool
+    ) -> None:
+        last_seen_iso = last_seen.isoformat()
+        # `since` is when the device went quiet, not when we noticed, so the
+        # duration, longest-down and stale_days all mean what they say.
+        incident = self._enrich(primary, self.hass.states.get(primary), since=last_seen_iso)
+        # The device has gone quiet, not one entity, so name the device.
+        incident.name = incident.device or incident.name
+        incident.device_id = device_id
+        incident.reason = REASON_SILENT
+        incident.last_seen = last_seen_iso
+        incident.silent_for_hours = int(age // 3600)
+        self._down[primary] = incident
+        self._silent[device_id] = primary
+        if announce:
+            self.hass.bus.async_fire(EVENT_ENTITY_DOWN, incident.as_event_data())
+        _LOGGER.debug("Silent: %s (last seen %s)", primary, last_seen_iso)
+
+    def _check_silent_device(self, device_id: str, last_seen_state, now=None) -> bool:
+        """Clear a silent incident once last_seen moves forward; otherwise
+        refresh its silent_for_hours. Returns True if anything changed."""
+        primary = self._silent.get(device_id)
+        incident = self._down.get(primary) if primary else None
+        if incident is None or incident.reason != REASON_SILENT:
+            self._silent.pop(device_id, None)
+            return False
+        last_seen = self._parse_last_seen(last_seen_state)
+        if last_seen is None:
+            return False
+        previous = dt_util.parse_datetime(incident.last_seen or "")
+        if previous is not None and last_seen > previous:
+            self._promote_recovery(primary)
+            return True
+        hours = int(((now or dt_util.utcnow()) - last_seen).total_seconds() // 3600)
+        if hours != incident.silent_for_hours:
+            incident.silent_for_hours = hours
+            return True
+        return False
+
     def _enrich(self, entity_id: str, state, since: str | None = None) -> Incident:
         """Resolve name/integration/device/area/battery. Runs per *incident*, not per event."""
         ent_reg = er.async_get(self.hass)
@@ -362,6 +561,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             since=since or dt_util.utcnow().isoformat(),
             battery=battery,
             flapping=flapping,
+            device_id=entry.device_id if entry else None,
         )
 
     # -- Startup / teardown -------------------------------------------------
@@ -373,6 +573,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         # Index batteries before the state listener starts so the very first
         # incident can be enriched.
         self._index_batteries()
+        self._index_last_seen()
         self._seed_battery_cache()
 
         # Publish an empty snapshot so entities never read None before warmup.
@@ -448,6 +649,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
     def _on_registry_updated(self, event: Event) -> None:
         self._platform_cache.clear()
         self._index_batteries()
+        self._index_last_seen()
         entity_id = event.data.get("entity_id")
         # Only tracked entities are worth a registry lookup (keep this cheap).
         if not entity_id or (
@@ -483,8 +685,13 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._pending.clear()
         # Preserve known since-timestamps (current incidents, then persisted)
         # so durations survive an options-change reseed and a restart.
-        known_since = {eid: inc.since for eid, inc in self._down.items()}
+        known_since = {
+            eid: inc.since
+            for eid, inc in self._down.items()
+            if inc.reason == REASON_STATE
+        }
         self._down.clear()
+        self._silent.clear()
 
         now = time.time()
         for state in self.hass.states.async_all():
@@ -502,6 +709,11 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             self._down[state.entity_id] = self._enrich(
                 state.entity_id, state, since=since
             )
+
+        # Silent devices are re-derived from last_seen, which survives a
+        # restart, so there is nothing to persist. Seeding is quiet, like the
+        # state seed above: these were already silent before we looked.
+        self._scan_silent(announce=False)
 
         if initial:
             _LOGGER.debug("Seeded with %d down entities", len(self._down))
@@ -522,6 +734,16 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         if self._warming:
             return  # the warmup seed will pick up whatever is still bad
 
+        # A silent device's last_seen just moved: it has been heard from. Empty
+        # unless a silent incident is live, so the hot path pays one truthiness
+        # check in the normal case.
+        if self._silent:
+            device_id = self._last_seen_entities.get(entity_id)
+            if device_id in self._silent and self._check_silent_device(
+                device_id, new_state
+            ):
+                self._schedule_write()
+
         is_bad = new_state is not None and new_state.state in self._bad_states
         tracked = entity_id in self._down or entity_id in self._pending
 
@@ -536,6 +758,17 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             # which keeps this to one truthiness check on the hot path.
             if self._recovery_attempts and new_state is not None:
                 self._forget_recovery(entity_id)
+            return
+
+        incident = self._down.get(entity_id)
+        if incident is not None and incident.reason == REASON_SILENT:
+            # A silent device's states are not what flagged it, so they can't
+            # clear it either: only a fresher last_seen can (_check_silent_device),
+            # or a real registry removal (_on_registry_updated). In particular a
+            # reload's transient removal must not drop it, or every silent
+            # device would be re-announced on the next housekeeping tick.
+            if new_state is not None:
+                incident.state = new_state.state
             return
 
         if new_state is None:
@@ -591,12 +824,20 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
     def _promote_recovery(self, entity_id: str) -> None:
         incident = self._down.pop(entity_id)
+        if incident.reason == REASON_SILENT:
+            self._silent.pop(incident.device_id, None)
         self._recovered_at[entity_id] = time.monotonic()
         self._realerted_at.pop(entity_id, None)
         self._forget_recovery(entity_id)
         self._note_recovery()
         self.hass.bus.async_fire(
-            EVENT_ENTITY_RECOVERED, {"entity_id": entity_id, "name": incident.name}
+            EVENT_ENTITY_RECOVERED,
+            {
+                "entity_id": entity_id,
+                "name": incident.name,
+                "reason": incident.reason,
+                "device_id": incident.device_id,
+            },
         )
         _LOGGER.debug("Recovered: %s", entity_id)
         self._schedule_write()
@@ -611,7 +852,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         cancel = self._pending.pop(entity_id, None)
         if cancel:
             cancel()
-        if self._down.pop(entity_id, None) is not None:
+        incident = self._down.pop(entity_id, None)
+        if incident is not None:
+            if incident.reason == REASON_SILENT:
+                self._silent.pop(incident.device_id, None)
             self._schedule_write()
 
     # -- Insight / persistence helpers --------------------------------------
@@ -668,6 +912,9 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         if expired:
             self._schedule_write()
 
+        if not self._warming and self._scan_silent(announce=True):
+            self._schedule_write()
+
         if not self._down:
             return
         # Both are per-pass state — entry health is only stable within a tick,
@@ -700,8 +947,13 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                         {**inc.as_event_data(), "down_seconds": int(age)},
                     )
 
-            # Opt-in auto-recovery.
-            if self._auto_recovery and age >= self._recovery_delay:
+            # Opt-in auto-recovery. Not for silent devices: a reload or ping
+            # cannot put fresh batteries in a door sensor.
+            if (
+                self._auto_recovery
+                and inc.reason == REASON_STATE
+                and age >= self._recovery_delay
+            ):
                 self._maybe_recover(entity_id)
 
         if changed:
