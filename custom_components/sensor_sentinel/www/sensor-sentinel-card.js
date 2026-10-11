@@ -766,7 +766,7 @@ class SensorSentinelCard extends HTMLElement {
         <div class="ss-group-head">
           <span class="ss-caret" data-toggle="${encodeURIComponent(key)}">${collapsed ? "▸" : "▾"}</span>
           <span class="ss-group-name" data-toggle="${encodeURIComponent(key)}">${
-            silent ? '<ha-icon icon="mdi:battery-alert-variant-outline" class="ss-silent-icon"></ha-icon> ' : ""
+            silent ? '<ha-icon icon="mdi:battery-alert" class="ss-silent-icon"></ha-icon>' : ""
           }${esc(this._groupLabel(key))} <span class="ss-group-count">(${rows.length})</span></span>
           <span class="ss-group-actions">
             <button data-gact="snooze" data-gkey="${encodeURIComponent(key)}" title="Snooze all in group">💤</button>
@@ -1050,8 +1050,10 @@ class SensorSentinelCard extends HTMLElement {
           .ss-flap { color:var(--warning-color,#ffa600); }
           .ss-stale { color:var(--secondary-text-color); }
           .ss-batt { color:var(--error-color,#db4437); }
-          .ss-group-silent .ss-group-name { color:var(--warning-color,#ff9800); }
-          .ss-silent-icon { --mdc-icon-size:18px; vertical-align:-3px; }
+          /* Flex, not vertical-align: centres the icon on the text line at any font size. */
+          .ss-group-silent .ss-group-name { color:var(--warning-color,#ff9800);
+            display:flex; align-items:center; gap:6px; }
+          .ss-silent-icon { --mdc-icon-size:20px; display:flex; flex:none; }
           .ss-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
           .ss-mdi { --mdc-icon-size:18px; width:18px; height:18px; vertical-align:middle;
             color:var(--secondary-text-color); }
