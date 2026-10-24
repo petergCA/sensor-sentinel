@@ -30,6 +30,7 @@
           "recovery_delay": "Wait before recovery attempt (seconds)",
           "silent_hours": "Flag devices not heard from in (hours)",
           "silent_exclude_devices": "Devices exempt from the silent check",
+          "probe_hours": "Ping quiet mains Z-Wave nodes every (hours)",
           "notify_targets": "Mobile notify services (e.g. mobile_app_iphone)",
           "persistent_notification": "Create persistent notifications"
         },
@@ -47,6 +48,7 @@
           "recovery_delay": "How long an entity must be down before the first recovery attempt (only used when automatic recovery is on).",
           "silent_hours": "Catches dead battery devices that never go unavailable: a sleeping Z-Wave node keeps its last state and battery level forever. A device is flagged when its last_seen sensor (Z-Wave JS, or Zigbee2MQTT with last_seen enabled) is older than this. Allow at least twice the device's wake-up interval; 48 suits most battery sensors. 0 disables.",
           "silent_exclude_devices": "Devices that are legitimately quiet for long stretches, such as button remotes, so they are never flagged as silent.",
+          "probe_hours": "A Z-Wave node the driver marks dead is always flagged, but the driver only notices when a message to it fails, and a repeater or idle plug is never sent one. This pings each mains node not heard from in this many hours, at most once per interval, so a dead one gets noticed. 24 suits most homes. 0 disables.",
           "notify_targets": "notify.* service names without the notify. prefix, e.g. mobile_app_your_phone."
         }
       },

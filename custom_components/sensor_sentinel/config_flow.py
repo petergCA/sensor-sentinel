@@ -31,6 +31,7 @@ from .const import (
     CONF_INTEGRATION_THRESHOLD,
     CONF_NOTIFY_TARGETS,
     CONF_PERSISTENT_NOTIFICATION,
+    CONF_PROBE_HOURS,
     CONF_RECOVERY_DELAY,
     CONF_REALERT_HOURS,
     CONF_SILENT_EXCLUDE_DEVICES,
@@ -43,6 +44,7 @@ from .const import (
     DEFAULT_EXCLUDED_DOMAINS,
     DEFAULT_GRACE_PERIOD,
     DEFAULT_INTEGRATION_THRESHOLD,
+    DEFAULT_PROBE_HOURS,
     DEFAULT_RECOVERY_DELAY,
     DEFAULT_REALERT_HOURS,
     DEFAULT_SILENT_HOURS,
@@ -94,6 +96,7 @@ _DEFAULTS: dict[str, Any] = {
     CONF_RECOVERY_DELAY: DEFAULT_RECOVERY_DELAY,
     CONF_SILENT_HOURS: DEFAULT_SILENT_HOURS,
     CONF_SILENT_EXCLUDE_DEVICES: [],
+    CONF_PROBE_HOURS: DEFAULT_PROBE_HOURS,
 }
 
 
@@ -302,6 +305,14 @@ class SentinelOptionsFlow(OptionsFlow):
                     CONF_SILENT_EXCLUDE_DEVICES,
                     default=self._current(CONF_SILENT_EXCLUDE_DEVICES),
                 ): _CleanDeviceSelector(selector.DeviceSelectorConfig(multiple=True)),
+                vol.Required(
+                    CONF_PROBE_HOURS, default=self._current(CONF_PROBE_HOURS)
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=168, step=1, unit_of_measurement="h",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
                 vol.Optional(
                     CONF_NOTIFY_TARGETS, default=self._current(CONF_NOTIFY_TARGETS)
                 ): _tag_selector(self._current(CONF_NOTIFY_TARGETS)),

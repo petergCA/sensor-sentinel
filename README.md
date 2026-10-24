@@ -63,8 +63,16 @@ services.
   raised as one incident, named after the device, with its last reported
   battery. It clears as soon as the device is heard from again. Only
   **battery** devices are checked: mains devices aren't polled and can sit
-  quiet for days when nobody uses them, and a dead one goes unavailable on its
-  own.
+  quiet for days when nobody uses them (see dead nodes, next).
+- **Dead Z-Wave nodes** — a node the Z-Wave JS driver has marked dead (its
+  `Node status` sensor reads `dead`) is flagged like any unavailable entity,
+  named after the device, and clears when the node comes back. The driver only
+  notices a dead node when a message to it fails, though, and nothing ever
+  sends a repeater or an idle plug anything, so one can sit dead while still
+  reading `alive`. With **Ping quiet mains Z-Wave nodes every** set (opt-in),
+  Sentinel pings each mains node it hasn't heard from in that many hours, at
+  most once per interval and a few per 5-minute tick. A dead one fails the
+  ping, flips to `dead`, and is flagged.
 - **Durable** — incident start-times and snoozes persist across restarts, so
   durations and the trend sparkline survive a reboot.
 
@@ -174,6 +182,7 @@ inline help text.
 | **Auto-retire incidents after** | 0 (off) | Drop incidents down longer than this many days. |
 | **Flag devices not heard from in** | 0 (off) | Raise a *silent* incident for a device whose `last_seen` is older than this many hours. 48 suits most battery sensors; allow at least twice the device's wake-up interval. |
 | **Devices exempt from the silent check** | — | Devices that are legitimately quiet, such as button remotes. |
+| **Ping quiet mains Z-Wave nodes every** | 0 (off) | Ping mains nodes not heard from in this many hours so a dead one gets marked and flagged. 24 suits most homes. |
 | **Automatic recovery** | off | Try to heal stuck entities (ping / reload) with guardrails — see below. |
 | **Recovery delay** | 300s | How long down before the first recovery attempt. |
 | **Notification targets** | — | `notify.*` service names (without the `notify.` prefix). |
@@ -221,8 +230,8 @@ auto-recovery to discover.
 | `sensor_sentinel.entity_down` | `entity_id, state, name, integration, device, device_id, area, since, battery, flapping, stale, reason` — plus `last_seen, silent_for_hours` when `reason` is `silent` |
 | `sensor_sentinel.entity_recovered` | `entity_id, name, reason, device_id` |
 
-`reason` is `state` for an unavailable/unknown entity and `silent` for a device
-that stopped reporting. Existing automations keep working unchanged; filter on
+`reason` is `state` for an unavailable/unknown entity, `silent` for a device
+that stopped reporting, and `dead` for a Z-Wave node the driver marked dead. Existing automations keep working unchanged; filter on
 `reason` if you want to treat the two differently.
 | `sensor_sentinel.entity_still_down` | incident fields + `down_seconds` (fired by the opt-in re-alert) |
 
@@ -248,6 +257,9 @@ that stopped reporting. Existing automations keep working unchanged; filter on
 - The silent-device check adds no listeners and touches only devices that have a
   `last_seen` sensor, once per housekeeping tick (every 5 minutes). The hot path
   pays one empty-dict check unless a silent incident is live.
+- The dead-node check is one extra set lookup, and only for entities whose state
+  is literally `dead`. The probe sends at most 5 pings per 5-minute tick, each
+  node at most once per interval, and skips any node heard from recently.
 
 ## Good to know
 
@@ -272,6 +284,12 @@ that stopped reporting. Existing automations keep working unchanged; filter on
   silent check**. A device that already has an unavailable entity is reported
   by that incident alone, not twice, and auto-recovery never acts on a silent
   device (a reload can't change a battery).
+- **Dead-node check: what it needs.** The `Node status` diagnostic sensor
+  (enabled by default in Z-Wave JS). Exclude a node's `Node status` entity to
+  stop both the dead check and the probe for that node. Auto-recovery, when on,
+  pings dead nodes too, since a successful ping is what revives them. A Z-Wave
+  JS restart resets every node to `alive`, so a dead node reappears only once
+  something (the probe, an automation) tries to reach it again.
 - **Count looks high right after a restart?** That's the startup warmup settling
   — boot-time transients clear within the warmup window.
 
@@ -310,8 +328,8 @@ If a dashboard shows a red **"Configuration error"** where the card should be:
 
 ## Status
 
-Actively developed. Auto-recovery, re-alert, stale-retire and the silent-device
-check are **opt-in** and conservative (off by default), so the integration
+Actively developed. Auto-recovery, re-alert, stale-retire, the silent-device
+check and the Z-Wave probe are **opt-in** and conservative (off by default), so the integration
 never acts on your system unless you ask it to.
 
 ## License

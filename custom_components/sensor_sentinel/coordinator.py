@@ -20,6 +20,9 @@ A periodic housekeeping tick drives the opt-in re-alert / stale-retire /
 auto-recovery features, and the opt-in *silent-device* check: a device whose
 last_seen timestamp has gone stale is flagged even though its entities still
 look healthy (a dead battery sensor keeps reporting its last state forever).
+A Z-Wave node the driver has marked *dead* is flagged too (its node_status
+sensor reads "dead", a normal state to everything else), and an opt-in probe
+pings quiet mains nodes so a dead one gets marked in the first place.
 Incident ``since`` timestamps and snoozes survive a restart via the config
 Store.
 """
@@ -47,6 +50,7 @@ from .const import (
     CONF_AUTO_RECOVERY,
     CONF_BAD_STATES,
     CONF_GRACE_PERIOD,
+    CONF_PROBE_HOURS,
     CONF_RECOVERY_DELAY,
     CONF_REALERT_HOURS,
     CONF_SILENT_EXCLUDE_DEVICES,
@@ -56,6 +60,7 @@ from .const import (
     DEFAULT_AUTO_RECOVERY,
     DEFAULT_BAD_STATES,
     DEFAULT_GRACE_PERIOD,
+    DEFAULT_PROBE_HOURS,
     DEFAULT_RECOVERY_DELAY,
     DEFAULT_REALERT_HOURS,
     DEFAULT_SILENT_HOURS,
@@ -66,9 +71,12 @@ from .const import (
     EVENT_ENTITY_RECOVERED,
     EVENT_ENTITY_STILL_DOWN,
     HOUSEKEEPING_INTERVAL,
+    NODE_STATUS_DEAD,
+    PROBE_MAX_PER_TICK,
     RECOVERY_COOLDOWN,
     RECOVERY_MAX_ATTEMPTS,
     RECOVERY_MAX_ATTEMPTS_SHARED,
+    REASON_DEAD,
     REASON_SILENT,
     REASON_STATE,
     SILENT_PLATFORMS,
@@ -112,7 +120,8 @@ class Incident:
     stale: bool = False
     device_id: str | None = None
     # "state" for an unavailable/unknown entity; "silent" for a device whose
-    # last_seen went stale while its entities kept their last values.
+    # last_seen went stale while its entities kept their last values; "dead"
+    # for a Z-Wave node the driver has marked dead.
     reason: str = REASON_STATE
     last_seen: str | None = None  # ISO8601, silent incidents only
     silent_for_hours: int | None = None  # refreshed each housekeeping tick
@@ -170,6 +179,12 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         # orphan a live incident.
         self._silent: dict[str, str] = {}
 
+        # Dead-node check: Z-Wave JS node_status sensors, indexed with the rest.
+        self._node_status: dict[str, str] = {}  # node_status eid -> device_id
+        # Mains nodes the probe may ping: device_id -> (node_status, last_seen).
+        self._mains_nodes: dict[str, tuple[str, str | None]] = {}
+        self._probed_at: dict[str, float] = {}  # device_id -> monotonic
+
         # Persistence + insight/housekeeping state.
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._stored_since: dict[str, str] = {}
@@ -215,6 +230,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         )
         self._recovery_delay = _num(CONF_RECOVERY_DELAY, DEFAULT_RECOVERY_DELAY)
         self._silent_hours = _num(CONF_SILENT_HOURS, DEFAULT_SILENT_HOURS)
+        self._probe_hours = _num(CONF_PROBE_HOURS, DEFAULT_PROBE_HOURS)
         self._silent_excluded_devices = frozenset(
             d for d in (opts.get(CONF_SILENT_EXCLUDE_DEVICES) or []) if isinstance(d, str)
         )
@@ -244,7 +260,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         state = self.hass.states.get(entity_id)
         if (
             state is not None
-            and state.state in self._bad_states
+            and self._is_bad(entity_id, state.state)
             and not self.exclusions.is_excluded(entity_id, time.time())
             and entity_id not in self._down
             and entity_id not in self._pending
@@ -285,9 +301,15 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             }
         if entity_id in self._pending:
             return {"result": "pending_grace", "state": state.state}
-        if state.state in self._bad_states:
+        if self._is_bad(entity_id, state.state):
             return {"result": "bad_awaiting_grace", "state": state.state}
         return {"result": "ok", "state": state.state}
+
+    def _is_bad(self, entity_id: str, value: str) -> bool:
+        """Is this state value a reportable one for this entity?"""
+        return value in self._bad_states or (
+            value == NODE_STATUS_DEAD and entity_id in self._node_status
+        )
 
     # -- Registry helpers (cached; refreshed on registry-updated events) ----
 
@@ -380,16 +402,20 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
         Battery devices only. A mains device (fan, plug, repeater) is not
         polled and only talks when something changes, so its last_seen goes
-        stale whenever nobody touches it — and if it does die, it goes
-        unavailable on the first failed send, which the state check already
-        catches. A dead battery sleeper is the one case nothing else sees.
+        stale whenever nobody touches it. A dead mains node is the dead-node
+        check's job instead (node_status, plus the optional probe).
 
         A disabled last_seen sensor is invisible here (it has no state), so a
         device whose sensor is disabled is simply not checked.
+
+        The same pass indexes Z-Wave node_status sensors (the dead-node check)
+        and which of those nodes are mains-powered (the probe's targets) —
+        exactly the devices the silent check leaves out.
         """
         by_device: dict[str, str] = {}
         candidates: dict[str, list] = {}
         battery_devices: set[str] = set()
+        node_status: dict[str, str] = {}
         for entry in er.async_get(self.hass).entities.values():
             if not entry.device_id or entry.platform not in SILENT_PLATFORMS:
                 continue
@@ -398,7 +424,9 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 battery_devices.add(entry.device_id)
             if entry.disabled_by is not None:
                 continue
-            if self._is_last_seen(entry):
+            if self._is_node_status(entry):
+                node_status[entry.entity_id] = entry.device_id
+            elif self._is_last_seen(entry):
                 by_device.setdefault(entry.device_id, entry.entity_id)
             elif entry.entity_category is None:
                 candidates.setdefault(entry.device_id, []).append(entry.entity_id)
@@ -415,6 +443,16 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             )
             return (order, len(entity_id), entity_id)
 
+        self._node_status = node_status
+        self._mains_nodes = {
+            device_id: (status_eid, by_device.get(device_id))
+            for status_eid, device_id in node_status.items()
+            if device_id not in battery_devices
+        }
+        self._probed_at = {
+            d: t for d, t in self._probed_at.items() if d in self._mains_nodes
+        }
+
         by_device = {d: e for d, e in by_device.items() if d in battery_devices}
         primary: dict[str, str] = {}
         for device_id, last_seen_eid in by_device.items():
@@ -423,6 +461,15 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._last_seen_by_device = by_device
         self._last_seen_entities = {eid: dev for dev, eid in by_device.items()}
         self._primary_by_device = primary
+
+    @staticmethod
+    def _is_node_status(entry) -> bool:
+        """Z-Wave JS's per-node status sensor (alive / asleep / awake / dead)."""
+        return (
+            entry.domain == "sensor"
+            and entry.platform == "zwave_js"
+            and str(entry.unique_id).endswith(".node_status")
+        )
 
     @staticmethod
     def _parse_last_seen(state):
@@ -458,7 +505,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         state_devices = {
             inc.device_id
             for inc in self._down.values()
-            if inc.reason == REASON_STATE and inc.device_id
+            if inc.reason != REASON_SILENT and inc.device_id
         }
         changed = False
         for device_id, last_seen_eid in self._last_seen_by_device.items():
@@ -562,7 +609,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
         flapping = (time.monotonic() - self._recovered_at.get(entity_id, 0)) < _FLAP_WINDOW
 
-        return Incident(
+        incident = Incident(
             entity_id=entity_id,
             state=state.state if state else "unknown",
             name=name,
@@ -574,6 +621,21 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             flapping=flapping,
             device_id=entry.device_id if entry else None,
         )
+        self._apply_node_status(incident)
+        return incident
+
+    def _apply_node_status(self, incident: Incident) -> None:
+        """A dead node_status stands for its whole device, so name the device.
+
+        Merely unavailable (Z-Wave JS restarting) is an ordinary state incident.
+        """
+        if incident.entity_id not in self._node_status:
+            return
+        if incident.state == NODE_STATUS_DEAD:
+            incident.reason = REASON_DEAD
+            incident.name = incident.device or incident.name
+        else:
+            incident.reason = REASON_STATE
 
     # -- Startup / teardown -------------------------------------------------
 
@@ -699,14 +761,14 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         known_since = {
             eid: inc.since
             for eid, inc in self._down.items()
-            if inc.reason == REASON_STATE
+            if inc.reason != REASON_SILENT
         }
         self._down.clear()
         self._silent.clear()
 
         now = time.time()
         for state in self.hass.states.async_all():
-            if state.state not in self._bad_states:
+            if not self._is_bad(state.entity_id, state.state):
                 continue
             if self.exclusions.is_excluded(state.entity_id, now):
                 continue
@@ -755,7 +817,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             ):
                 self._schedule_write()
 
-        is_bad = new_state is not None and new_state.state in self._bad_states
+        is_bad = new_state is not None and self._is_bad(entity_id, new_state.state)
         tracked = entity_id in self._down or entity_id in self._pending
 
         # The overwhelmingly common case: a healthy entity changing value.
@@ -801,6 +863,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             if entity_id in self._down:
                 # Already down; refresh the state label (unknown -> unavailable).
                 self._down[entity_id].state = new_state.state
+                self._apply_node_status(self._down[entity_id])
                 return
             if entity_id in self._pending:
                 return  # grace timer already running
@@ -818,7 +881,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         def _fire(_now) -> None:
             self._pending.pop(entity_id, None)
             state = self.hass.states.get(entity_id)
-            if state is None or state.state not in self._bad_states:
+            if state is None or not self._is_bad(entity_id, state.state):
                 return  # recovered during grace
             if self.exclusions.is_excluded(entity_id, time.time()):
                 return
@@ -926,6 +989,9 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         if not self._warming and self._scan_silent(announce=True):
             self._schedule_write()
 
+        if not self._warming and self._probe_hours > 0:
+            self._probe_quiet_nodes()
+
         if not self._down:
             return
         # Both are per-pass state — entry health is only stable within a tick,
@@ -959,16 +1025,58 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                     )
 
             # Opt-in auto-recovery. Not for silent devices: a reload or ping
-            # cannot put fresh batteries in a door sensor.
+            # cannot put fresh batteries in a door sensor. A dead node does
+            # get pinged — a successful ping is exactly what revives it.
             if (
                 self._auto_recovery
-                and inc.reason == REASON_STATE
+                and inc.reason != REASON_SILENT
                 and age >= self._recovery_delay
             ):
                 self._maybe_recover(entity_id)
 
         if changed:
             self._schedule_write()
+
+    def _probe_quiet_nodes(self) -> None:
+        """Ping mains Z-Wave nodes nobody has heard from lately.
+
+        The driver marks a node dead only when a send to it fails, and a
+        repeater or an idle plug is never sent anything — so it can sit dead
+        while reporting "alive" for days. A ping is the cheapest send there
+        is: if it fails, node_status flips to dead and the ordinary state path
+        takes it from there (grace, incident, recovery). Each node is pinged at
+        most once per probe interval, a few per tick.
+        """
+        interval = self._probe_hours * 3600
+        now = dt_util.utcnow()
+        now_mono = time.monotonic()
+        now_ts = time.time()
+        sent = 0
+        for device_id, (status_eid, last_seen_eid) in self._mains_nodes.items():
+            if sent >= PROBE_MAX_PER_TICK:
+                break
+            last = self._probed_at.get(device_id)
+            if last is not None and now_mono - last < interval:
+                continue
+            if status_eid in self._down or status_eid in self._pending:
+                continue  # already flagged; auto-recovery does the pinging
+            status = self.hass.states.get(status_eid)
+            if status is None or status.state != "alive":
+                continue  # dead / unavailable is already a state we see
+            if last_seen_eid:
+                last_seen = self._parse_last_seen(self.hass.states.get(last_seen_eid))
+                if last_seen is not None and (now - last_seen).total_seconds() < interval:
+                    continue  # heard from recently, so it isn't dead
+            if self.exclusions.is_excluded(status_eid, now_ts):
+                continue
+            self._probed_at[device_id] = now_mono
+            sent += 1
+            _LOGGER.debug("Probe: pinging quiet Z-Wave node %s", status_eid)
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "zwave_js", "ping", {"entity_id": status_eid}, blocking=False
+                )
+            )
 
     def _incident_age(self, inc: Incident, now_dt) -> float | None:
         """Seconds an incident has been down, or None if the timestamp is bad."""

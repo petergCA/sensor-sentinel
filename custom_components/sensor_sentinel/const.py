@@ -34,6 +34,7 @@ CONF_AUTO_RECOVERY = "auto_recovery"
 CONF_RECOVERY_DELAY = "recovery_delay"
 CONF_SILENT_HOURS = "silent_hours"
 CONF_SILENT_EXCLUDE_DEVICES = "silent_exclude_devices"
+CONF_PROBE_HOURS = "probe_hours"
 
 # ---------------------------------------------------------------------------
 # Defaults — ported from the jazzyisj template semantics (see PRD §3, Q1).
@@ -110,6 +111,18 @@ SILENT_PLATFORMS = frozenset({"zwave_js", "mqtt"})
 # Incident.reason values. "state" = the classic unavailable/unknown incident.
 REASON_STATE = "state"
 REASON_SILENT = "silent"
+REASON_DEAD = "dead"
+# Dead-node check (Z-Wave JS). A node the driver has given up on reports
+# "dead" on its node_status sensor, which is a perfectly ordinary *state* to
+# everything else — so it is treated as bad here, always.
+NODE_STATUS_DEAD = "dead"
+# ...but the driver only marks a node dead after a message to it fails, and a
+# mains node nothing talks to (a repeater, an idle plug) is never sent one. So
+# optionally ping mains nodes not heard from in this many hours, at most once
+# per that interval each: a dead one fails the ping and gets marked. 0 = off.
+DEFAULT_PROBE_HOURS = 0
+# Cap pings per housekeeping tick so a fresh start doesn't flood the mesh.
+PROBE_MAX_PER_TICK = 5
 # How often the periodic housekeeping tick runs (re-alert / stale / recovery).
 HOUSEKEEPING_INTERVAL = 300
 
