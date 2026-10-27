@@ -111,7 +111,7 @@ matter how many entities are down). See [Using the card](#using-the-card).
 
 ### Automation surface
 
-`sensor_sentinel.entity_down` / `entity_recovered` / `entity_still_down` bus
+`sensor_sentinel.entity_down` / `entity_recovered` / `entity_still_down` / `entity_dropped` bus
 events carry full context for your own automations. See [Events](#events).
 
 ## Install
@@ -218,9 +218,9 @@ auto-recovery to discover.
 
 | Entity | Purpose |
 | --- | --- |
-| `sensor.sentinel_unavailable_count` | Live down-count. Attributes: `by_integration`, `by_area`, a capped 25-row sample, `recovered_today`, `longest_down`, `stale_count`. |
+| `sensor.sentinel_unavailable_count` | Live down-count. Attributes: `by_integration`, `by_area`, a capped 25-row sample, `recovered_today`, `longest_down`, `stale_count`, and `dropped` (integrations disabled/removed in the last day, with counts — shown as a note on the card so a disappearance doesn't read as a recovery). |
 | `binary_sensor.sentinel_problem` | `device_class: problem` — on when anything is down. |
-| `sensor.sentinel_recovered_today` | Entities recovered so far today (resets at local midnight). |
+| `sensor.sentinel_recovered_today` | Recoveries so far today (resets at local midnight). Counted per **device**, at most once per device per 5 minutes, so one flapping speaker or a device bringing back a dozen entities counts once; entities without a device count individually. |
 | `sensor.sentinel_longest_down` | Name of the entity down the longest; `entity_id` / `since` in attributes. |
 
 ## Events
@@ -229,11 +229,13 @@ auto-recovery to discover.
 | --- | --- |
 | `sensor_sentinel.entity_down` | `entity_id, state, name, integration, device, device_id, area, since, battery, flapping, stale, reason` — plus `last_seen, silent_for_hours` when `reason` is `silent` |
 | `sensor_sentinel.entity_recovered` | `entity_id, name, reason, device_id` |
-
-`reason` is `state` for an unavailable/unknown entity, `silent` for a device
-that stopped reporting, and `dead` for a Z-Wave node the driver marked dead. Existing automations keep working unchanged; filter on
-`reason` if you want to treat the two differently.
 | `sensor_sentinel.entity_still_down` | incident fields + `down_seconds` (fired by the opt-in re-alert) |
+| `sensor_sentinel.entity_dropped` | `entity_id, name, integration, device_id, reason` — a down entity left because it or its integration was disabled or removed (`reason`: `integration_disabled`, `entity_disabled`, `removed`). Not a recovery. |
+
+`reason` on down/recovered events is `state` for an unavailable/unknown entity,
+`silent` for a device that stopped reporting, and `dead` for a Z-Wave node the
+driver marked dead. Existing automations keep working unchanged; filter on
+`reason` if you want to treat them differently.
 
 ## Services
 

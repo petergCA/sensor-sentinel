@@ -79,6 +79,7 @@ class SentinelCountSensor(SentinelEntity, SensorEntity):
             "recovered_today": data.recovered_today,
             "longest_down": data.longest_down,
             "stale_count": data.stale_count,
+            "dropped": data.dropped,
         }
 
 

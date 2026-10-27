@@ -14,6 +14,9 @@ EVENT_ENTITY_DOWN = f"{DOMAIN}.entity_down"
 EVENT_ENTITY_RECOVERED = f"{DOMAIN}.entity_recovered"
 # Fired when an entity has stayed down past the re-alert window (opt-in).
 EVENT_ENTITY_STILL_DOWN = f"{DOMAIN}.entity_still_down"
+# Fired when a tracked entity leaves because it, or its whole integration, was
+# disabled or removed: it went away on purpose, so it is not a recovery.
+EVENT_ENTITY_DROPPED = f"{DOMAIN}.entity_dropped"
 
 # ---------------------------------------------------------------------------
 # Config / options keys.
@@ -112,6 +115,10 @@ SILENT_PLATFORMS = frozenset({"zwave_js", "mqtt"})
 REASON_STATE = "state"
 REASON_SILENT = "silent"
 REASON_DEAD = "dead"
+# Why a tracked entity was dropped without recovering (entity_dropped event).
+DROP_INTEGRATION_DISABLED = "integration_disabled"
+DROP_ENTITY_DISABLED = "entity_disabled"
+DROP_REMOVED = "removed"
 # Dead-node check (Z-Wave JS). A node the driver has given up on reports
 # "dead" on its node_status sensor, which is a perfectly ordinary *state* to
 # everything else — so it is treated as bad here, always.

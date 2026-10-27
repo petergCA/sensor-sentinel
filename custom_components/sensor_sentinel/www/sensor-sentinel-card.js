@@ -708,6 +708,23 @@ class SensorSentinelCard extends HTMLElement {
       body = `<div class="ss-empty">✅<span class="ss-cleartext">Everything's up — nothing down right now.</span></div>`;
     }
 
+    // Entities that left because they (or their integration) were disabled or
+    // removed. They drop out of the count, so say why rather than let that
+    // read as a recovery.
+    const DROP_TEXT = {
+      integration_disabled: "integration disabled",
+      entity_disabled: "disabled",
+      removed: "removed",
+    };
+    const dropped = Array.isArray(attrs.dropped) ? attrs.dropped : [];
+    if (dropped.length && !this._filter) {
+      const parts = dropped.map(
+        (d) =>
+          `${esc(this._integrationName(d.integration))}: ${DROP_TEXT[d.reason] || esc(d.reason)} (${Number(d.count) || 0} ${Number(d.count) === 1 ? "entity" : "entities"})`
+      );
+      body += `<div class="ss-note">Dropped, not recovered, in the last day: ${parts.join(" · ")}</div>`;
+    }
+
     const filterVal = esc(this._filter || "");
     const anyExpanded = orderedKeys.some((k) => !this._isCollapsed(k));
     const toggleAllBtn = orderedKeys.length

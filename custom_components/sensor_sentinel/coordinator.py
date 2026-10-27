@@ -67,7 +67,11 @@ from .const import (
     DEFAULT_STALE_DAYS,
     DEFAULT_STARTUP_GRACE,
     DOMAIN,
+    DROP_ENTITY_DISABLED,
+    DROP_INTEGRATION_DISABLED,
+    DROP_REMOVED,
     EVENT_ENTITY_DOWN,
+    EVENT_ENTITY_DROPPED,
     EVENT_ENTITY_RECOVERED,
     EVENT_ENTITY_STILL_DOWN,
     HOUSEKEEPING_INTERVAL,
@@ -90,6 +94,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # An entity that recovers and drops again within this window is "flapping".
 _FLAP_WINDOW = 300.0
+# How long a "dropped" note (integration disabled/removed) stays on the sensor.
+_DROPPED_TTL = 86400
 # Debounce window for persisting state to the Store.
 _STORE_DEBOUNCE = 15
 # When picking the entity that represents a silent device, prefer the one a
@@ -141,6 +147,9 @@ class _Snapshot:
     recovered_today: int = 0
     longest_down: dict | None = None
     stale_count: int = 0
+    # Tracked entities that left on purpose (disabled / removed) in the last
+    # day, one row per integration and reason. Not recoveries, and not faults.
+    dropped: list[dict] = field(default_factory=list)
 
 
 class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
@@ -190,6 +199,10 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._stored_since: dict[str, str] = {}
         self._recovered_today = 0
         self._recovered_date = dt_util.now().date().isoformat()
+        # device (or entity) -> monotonic time its last recovery was counted.
+        self._counted_at: dict[str, float] = {}
+        # (integration, reason) -> {"integration", "reason", "count", "at"}
+        self._dropped: dict[tuple[str, str], dict] = {}
         self._realerted_at: dict[str, float] = {}  # entity_id -> monotonic
         self._recovery_attempts: dict[str, int] = {}
         self._recovery_last: dict[str, float] = {}  # entity_id -> monotonic
@@ -240,7 +253,11 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self.exclusions.update(dict(self.entry.options))
         self._load_tunables()
         # A rule change can silence or surface entities; re-seed from scratch.
-        self._reseed()
+        # Not during the startup warmup, though: the warmup seed will run with
+        # the new rules anyway, and seeding now would record every boot-time
+        # unknown as down (269 of them, the one time it happened).
+        if not self._warming:
+            self._reseed()
         self._schedule_write()
 
     # -- Actions backing the card / services --------------------------------
@@ -734,11 +751,48 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         # Likewise drop anything removed from the registry.
         entry = er.async_get(self.hass).async_get(entity_id)
         if entry is None or entry.disabled_by is not None:
+            incident = self._down.get(entity_id)
+            if incident is not None:
+                self._note_dropped(incident, self._drop_reason(entry))
             self._clear_tracking(entity_id)
             # Deleted or disabled for real, unlike the transient state-machine
             # removal a reload causes — so this is where the recovery budget is
             # genuinely dead and should not be left behind.
             self._forget_recovery(entity_id)
+
+    @staticmethod
+    def _drop_reason(entry) -> str:
+        if entry is None:
+            return DROP_REMOVED
+        if entry.disabled_by == er.RegistryEntryDisabler.CONFIG_ENTRY:
+            return DROP_INTEGRATION_DISABLED
+        return DROP_ENTITY_DISABLED
+
+    def _note_dropped(self, incident: Incident, reason: str) -> None:
+        """Record that a down entity left on purpose rather than recovering.
+
+        Without this it simply vanishes from the count, which reads exactly
+        like a recovery to anyone watching the number.
+        """
+        integration = incident.integration or "unknown"
+        row = self._dropped.setdefault(
+            (integration, reason),
+            {"integration": integration, "reason": reason, "count": 0},
+        )
+        row["count"] += 1
+        row["at"] = dt_util.utcnow().isoformat()
+        row["_mono"] = time.monotonic()
+        self.hass.bus.async_fire(
+            EVENT_ENTITY_DROPPED,
+            {
+                "entity_id": incident.entity_id,
+                "name": incident.name,
+                "integration": incident.integration,
+                "device_id": incident.device_id,
+                "reason": reason,
+            },
+        )
+        _LOGGER.debug("Dropped (%s): %s", reason, incident.entity_id)
 
     def _is_registry_disabled(self, entity_id: str) -> bool:
         entry = er.async_get(self.hass).async_get(entity_id)
@@ -903,7 +957,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
         self._recovered_at[entity_id] = time.monotonic()
         self._realerted_at.pop(entity_id, None)
         self._forget_recovery(entity_id)
-        self._note_recovery()
+        self._note_recovery(incident.device_id or entity_id)
         self.hass.bus.async_fire(
             EVENT_ENTITY_RECOVERED,
             {
@@ -934,11 +988,24 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
 
     # -- Insight / persistence helpers --------------------------------------
 
-    def _note_recovery(self) -> None:
+    def _note_recovery(self, key: str) -> None:
+        """Count a recovery — once per device per flap window.
+
+        A device that drops and returns takes all its entities with it, and a
+        flapping one does so every minute: one Sonos speaker with 13 entities
+        put this past 9,000 in a day. So a device's recovery counts once, and
+        not again until a full flap window passes with no further recovery.
+        """
         today = dt_util.now().date().isoformat()
         if today != self._recovered_date:
             self._recovered_date = today
             self._recovered_today = 0
+            self._counted_at.clear()
+        now = time.monotonic()
+        last = self._counted_at.get(key)
+        self._counted_at[key] = now
+        if last is not None and now - last < _FLAP_WINDOW:
+            return
         self._recovered_today += 1
 
     async def _load_store(self) -> None:
@@ -1243,6 +1310,14 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
                 "name": oldest_inc.name,
                 "since": oldest_inc.since,
             }
+        cutoff = time.monotonic() - _DROPPED_TTL
+        self._dropped = {
+            k: row for k, row in self._dropped.items() if row["_mono"] >= cutoff
+        }
+        dropped = [
+            {k: v for k, v in row.items() if not k.startswith("_")}
+            for row in self._dropped.values()
+        ]
         return _Snapshot(
             count=active,
             incidents=dict(self._down),
@@ -1251,6 +1326,7 @@ class SentinelCoordinator(DataUpdateCoordinator[_Snapshot]):
             recovered_today=self._recovered_today,
             longest_down=longest,
             stale_count=stale,
+            dropped=dropped,
         )
 
     async def _async_update_data(self) -> _Snapshot:
